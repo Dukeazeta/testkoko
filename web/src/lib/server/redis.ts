@@ -10,14 +10,34 @@ function buildRedisClient(url: string): RedisClientType {
     url,
     socket: {
       connectTimeout: 3_000,
-      reconnectStrategy: false,
+      reconnectStrategy: (retries) => {
+        if (retries > 10) {
+          return new Error("Redis reconnect retries exceeded");
+        }
+
+        return Math.min(250 * 2 ** retries, 5_000);
+      },
     },
   });
 }
 
+function isRedisRequired(): boolean {
+  if (process.env.REQUIRE_REDIS === "true") {
+    return true;
+  }
+
+  return process.env.NODE_ENV === "production";
+}
+
 export async function getRedisClient(): Promise<RedisClientType | null> {
+  const required = isRedisRequired();
   const redisUrl = process.env.REDIS_URL;
+
   if (!redisUrl) {
+    if (required) {
+      throw new Error("REDIS_URL is required in this environment");
+    }
+
     return null;
   }
 
@@ -40,9 +60,14 @@ export async function getRedisClient(): Promise<RedisClientType | null> {
     })
     .catch((error) => {
       globalForRedis.redisConnecting = undefined;
+      if (required) {
+        throw error;
+      }
+
       if (process.env.NODE_ENV !== "production") {
         console.warn("Redis unavailable, falling back without cache:", error);
       }
+
       return null;
     });
 

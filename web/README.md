@@ -19,7 +19,7 @@ pnpm dev
 Open `http://localhost:3000`.
 Copy `.env.example` to `.env` before running Prisma commands.
 
-Run PostgreSQL and Redis locally before auth testing.
+Run PostgreSQL locally before auth testing. Redis can be local or hosted (`rediss://...`).
 
 ## Planning and architecture
 
@@ -51,10 +51,11 @@ Run PostgreSQL and Redis locally before auth testing.
   - Returns seeded exam and demo candidate credentials for local testing
 
 Session token and active-session cache keys are maintained in Redis, with PostgreSQL as the source of truth.
+In production, Redis is required. In development, the app can fall back if Redis is unavailable unless `REQUIRE_REDIS=true`.
 
 ## Local auth test
 
-1. Ensure PostgreSQL + Redis are running
+1. Ensure PostgreSQL is running and `REDIS_URL` points to local or hosted Redis
 2. Start app with `pnpm dev`
 3. Read demo credentials from `GET http://localhost:3000/api/auth/reference`
 4. Call login endpoint:
@@ -73,8 +74,33 @@ curl -X POST http://localhost:3000/api/auth/session/validate \
   -d '{"examId":"exam-mth101","sessionToken":"<token-from-login>"}'
 ```
 
+## Exam runtime API slice
+
+- `GET /api/exam/runtime?examId=<id>&sessionToken=<token>`
+  - Returns session-locked randomized question order and current saved answers.
+- `POST /api/exam/autosave`
+  - Input: `examId`, `sessionToken`, `questionId`, `selectedOption`
+  - Behavior: idempotent answer upsert by `(sessionId, questionId)`.
+- `POST /api/exam/submit`
+  - Input: `examId`, `sessionToken`, `mode` (`manual` or `timeout`)
+  - Behavior: race-safe finalization with one submission receipt per session.
+
+Example runtime flow:
+
+```bash
+curl "http://localhost:3000/api/exam/runtime?examId=exam-mth101&sessionToken=<token-from-login>"
+
+curl -X POST http://localhost:3000/api/exam/autosave \
+  -H "Content-Type: application/json" \
+  -d '{"examId":"exam-mth101","sessionToken":"<token-from-login>","questionId":"q-mth101-1","selectedOption":"21"}'
+
+curl -X POST http://localhost:3000/api/exam/submit \
+  -H "Content-Type: application/json" \
+  -d '{"examId":"exam-mth101","sessionToken":"<token-from-login>","mode":"manual"}'
+```
+
 ## Next implementation targets
 
-1. Add exam runtime APIs (question delivery, autosave, submit finalization)
-2. Add event log ingestion with strike escalation and monitoring feeds
-3. Introduce admin actions (force submit, extend time, reset session) with audit trail
+1. Add event log ingestion with strike escalation and monitoring feeds
+2. Introduce admin actions (force submit, extend time, reset session) with audit trail
+3. Add websocket monitoring stream for admin live dashboard

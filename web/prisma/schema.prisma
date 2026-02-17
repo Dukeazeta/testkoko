@@ -18,6 +18,11 @@ enum SessionStatus {
   submitted
 }
 
+enum SubmissionMode {
+  manual
+  timeout
+}
+
 model Exam {
   id            String       @id @default(cuid())
   accessCode    String       @unique
@@ -27,6 +32,8 @@ model Exam {
   sessionPolicy SessionPolicy @default(BlockNew)
   candidates    Candidate[]
   sessions      ExamSession[]
+  questions     Question[]
+  submissions   Submission[]
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 }
@@ -41,6 +48,7 @@ model Candidate {
   updatedAt         DateTime     @updatedAt
   exam              Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
   sessions          ExamSession[]
+  submissions       Submission[]
 
   @@unique([examId, candidateId])
   @@index([examId, surnameNormalized])
@@ -61,7 +69,75 @@ model ExamSession {
   userAgent         String
   exam              Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
   candidate         Candidate    @relation(fields: [candidateRecordId], references: [id], onDelete: Cascade)
+  sessionQuestions  SessionQuestion[]
+  answers           Answer[]
+  submission        Submission?
 
   @@index([examId, candidateRecordId, status])
   @@index([status, expiresAt])
+}
+
+model Question {
+  id            String            @id @default(cuid())
+  examId        String
+  prompt        String
+  options       Json
+  correctOption String
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+  exam          Exam              @relation(fields: [examId], references: [id], onDelete: Cascade)
+  sessionLinks  SessionQuestion[]
+  answers       Answer[]
+
+  @@index([examId])
+}
+
+model SessionQuestion {
+  id         String     @id @default(cuid())
+  sessionId  String
+  questionId String
+  orderIndex Int
+  createdAt  DateTime   @default(now())
+  session    ExamSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  question   Question   @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, questionId])
+  @@unique([sessionId, orderIndex])
+  @@index([questionId])
+}
+
+model Answer {
+  id             String      @id @default(cuid())
+  sessionId      String
+  questionId     String
+  selectedOption String
+  savedAt        DateTime    @default(now())
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+  session        ExamSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  question       Question    @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, questionId])
+  @@index([sessionId, savedAt])
+}
+
+model Submission {
+  id                String         @id @default(cuid())
+  sessionId         String         @unique
+  examId            String
+  candidateRecordId String
+  receiptId         String         @unique
+  mode              SubmissionMode
+  totalQuestions    Int
+  answeredQuestions Int
+  correctAnswers    Int
+  scorePercent      Float
+  submittedAt       DateTime       @default(now())
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  session           ExamSession    @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  exam              Exam           @relation(fields: [examId], references: [id], onDelete: Cascade)
+  candidate         Candidate      @relation(fields: [candidateRecordId], references: [id], onDelete: Cascade)
+
+  @@index([examId, candidateRecordId])
 }

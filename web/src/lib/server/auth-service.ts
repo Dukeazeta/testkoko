@@ -20,7 +20,7 @@ import { getRedisClient } from "@/lib/server/redis";
 
 const FAILED_LOGIN_WINDOW_SECONDS = 15 * 60;
 const MAX_FAILED_LOGIN_ATTEMPTS = 5;
-const SESSION_TTL_SECONDS = 15 * 60;
+const SESSION_MAX_TTL_SECONDS = 12 * 60 * 60;
 
 interface RequestContext {
   clientIp: string;
@@ -191,6 +191,15 @@ async function clearSessionKeys(examId: string, candidateRecordId: string, token
   await redis.del([activeSessionKey(examId, candidateRecordId), sessionTokenKey(tokenDigest)]);
 }
 
+async function clearActiveSessionPointer(examId: string, candidateRecordId: string): Promise<void> {
+  const redis = await getRedisClient();
+  if (!redis) {
+    return;
+  }
+
+  await redis.del(activeSessionKey(examId, candidateRecordId));
+}
+
 async function findExam(payload: CandidateLoginRequestBody) {
   if (payload.examId) {
     return prisma.exam.findUnique({
@@ -211,6 +220,7 @@ async function findExam(payload: CandidateLoginRequestBody) {
 
 async function readActiveSession(examId: string, candidateRecordId: string) {
   const redis = await getRedisClient();
+  const now = new Date();
 
   if (redis) {
     const cachedSessionId = await redis.get(activeSessionKey(examId, candidateRecordId));
@@ -219,13 +229,18 @@ async function readActiveSession(examId: string, candidateRecordId: string) {
         where: { id: cachedSessionId },
       });
 
-      if (session) {
+      if (session && session.status === SessionStatus.active && session.expiresAt > now) {
         return session;
+      }
+
+      if (session) {
+        await clearSessionKeys(examId, candidateRecordId, session.tokenHash);
+      } else {
+        await clearActiveSessionPointer(examId, candidateRecordId);
       }
     }
   }
 
-  const now = new Date();
   const session = await prisma.examSession.findFirst({
     where: {
       examId,
@@ -328,7 +343,9 @@ export async function loginCandidate(
 
   const rawToken = sessionToken();
   const tokenDigest = tokenHash(rawToken);
-  const expiresAt = new Date(now.getTime() + SESSION_TTL_SECONDS * 1000);
+  const examRemainingSeconds = Math.max(60, Math.floor((exam.endsAt.getTime() - now.getTime()) / 1000));
+  const ttlSeconds = Math.min(SESSION_MAX_TTL_SECONDS, examRemainingSeconds);
+  const expiresAt = new Date(now.getTime() + ttlSeconds * 1000);
 
   const session = await prisma.examSession.create({
     data: {
@@ -342,7 +359,7 @@ export async function loginCandidate(
     },
   });
 
-  await setSessionKeys(exam.id, candidate.id, tokenDigest, session.id, SESSION_TTL_SECONDS);
+  await setSessionKeys(exam.id, candidate.id, tokenDigest, session.id, ttlSeconds);
 
   return {
     status: 200,

@@ -1,0 +1,67 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum SessionPolicy {
+  BlockNew
+  KickOld
+}
+
+enum SessionStatus {
+  active
+  revoked
+  expired
+  submitted
+}
+
+model Exam {
+  id            String       @id @default(cuid())
+  accessCode    String       @unique
+  title         String
+  startsAt      DateTime
+  endsAt        DateTime
+  sessionPolicy SessionPolicy @default(BlockNew)
+  candidates    Candidate[]
+  sessions      ExamSession[]
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+}
+
+model Candidate {
+  id                String       @id @default(cuid())
+  examId            String
+  candidateId       String
+  surnameNormalized String
+  displayName       String
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+  exam              Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
+  sessions          ExamSession[]
+
+  @@unique([examId, candidateId])
+  @@index([examId, surnameNormalized])
+}
+
+model ExamSession {
+  id                String       @id @default(cuid())
+  examId            String
+  candidateRecordId String
+  tokenHash         String       @unique
+  status            SessionStatus @default(active)
+  expiresAt         DateTime
+  createdAt         DateTime     @default(now())
+  lastSeenAt        DateTime     @default(now())
+  revokedAt         DateTime?
+  submittedAt       DateTime?
+  clientIp          String
+  userAgent         String
+  exam              Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
+  candidate         Candidate    @relation(fields: [candidateRecordId], references: [id], onDelete: Cascade)
+
+  @@index([examId, candidateRecordId, status])
+  @@index([status, expiresAt])
+}

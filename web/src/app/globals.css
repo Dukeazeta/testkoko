@@ -1,28 +1,213 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f6f4ee;
-  --foreground: #1f2b2a;
-  --accent: #0c8b7a;
-  --surface: #fffdf8;
-  --stroke: #d8d2c3;
+  --bg: #ffffff;
+  --bg-subtle: #f5f5f5;
+  --surface: #ffffff;
+  --surface-muted: #fafafa;
+  --text: #0a0a0a;
+  --text-muted: #525252;
+  --text-soft: #737373;
+  --border: #e5e5e5;
+  --border-strong: #d4d4d4;
+  --black: #0a0a0a;
+  --white: #ffffff;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-space-grotesk);
-  --font-mono: var(--font-ibm-plex-mono);
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-space-grotesk), sans-serif;
+html {
+  scroll-behavior: smooth;
 }
 
-.texture {
-  background-image: radial-gradient(circle at 20% 20%, #d5efe8 0%, transparent 35%),
-    radial-gradient(circle at 80% 0%, #f5dfb8 0%, transparent 28%),
-    linear-gradient(180deg, #f8f5ef 0%, #f2eee5 100%);
+body.app-body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-manrope), system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+.font-heading {
+  font-family: var(--font-poppins), var(--font-manrope), system-ui, sans-serif;
+  letter-spacing: -0.02em;
+}
+
+p,
+span,
+label,
+input,
+textarea,
+button,
+table,
+li,
+a {
+  font-family: var(--font-manrope), system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+::selection {
+  background: #0a0a0a;
+  color: #ffffff;
+}
+
+.ui-shell {
+  margin: 0 auto;
+  width: 100%;
+  max-width: 1200px;
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+@media (min-width: 768px) {
+  .ui-shell {
+    padding-left: 2rem;
+    padding-right: 2rem;
+  }
+}
+
+.ui-card {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: 16px;
+}
+
+.ui-muted-card {
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  border-radius: 16px;
+}
+
+.ui-kicker {
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
+.ui-label {
+  margin-bottom: 0.35rem;
+  display: block;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+  font-weight: 600;
+}
+
+.ui-input,
+.ui-textarea,
+.ui-select {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid var(--border-strong);
+  background: var(--white);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.4;
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.ui-input,
+.ui-select {
+  height: 42px;
+  padding: 0 0.8rem;
+}
+
+.ui-textarea {
+  min-height: 140px;
+  padding: 0.75rem 0.8rem;
+}
+
+.ui-input:focus,
+.ui-textarea:focus,
+.ui-select:focus {
+  border-color: #0a0a0a;
+  box-shadow: 0 0 0 3px rgba(10, 10, 10, 0.08);
+}
+
+.ui-btn-primary,
+.ui-btn-secondary {
+  border-radius: 12px;
+  padding: 0.62rem 1rem;
+  font-size: 14px;
+  line-height: 1.2;
+  font-weight: 600;
+  transition: all 0.15s ease;
+}
+
+.ui-btn-primary {
+  background: var(--black);
+  color: var(--white);
+  border: 1px solid var(--black);
+}
+
+.ui-btn-primary:hover {
+  background: #242424;
+  border-color: #242424;
+}
+
+.ui-btn-secondary {
+  background: var(--white);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+}
+
+.ui-btn-secondary:hover {
+  border-color: #0a0a0a;
+}
+
+.ui-btn-primary:disabled,
+.ui-btn-secondary:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ui-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ui-table th {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-soft);
+  font-weight: 700;
+  background: var(--surface-muted);
+}
+
+.ui-table th,
+.ui-table td {
+  border-top: 1px solid var(--border);
+  padding: 0.7rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.ui-badge {
+  display: inline-flex;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-muted);
+  padding: 0.2rem 0.6rem;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.ui-divider {
+  height: 1px;
+  width: 100%;
+  background: var(--border);
 }

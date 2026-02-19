@@ -1,5 +1,3 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-
 import { SessionStatus } from "@prisma/client";
 
 import type {
@@ -17,6 +15,7 @@ import {
 import { evaluateSessionPolicy } from "@/lib/exam/session-policy";
 import { prisma } from "@/lib/server/prisma";
 import { getRedisClient } from "@/lib/server/redis";
+import { hashToken, randomToken } from "@/lib/server/security";
 
 const FAILED_LOGIN_WINDOW_SECONDS = 15 * 60;
 const MAX_FAILED_LOGIN_ATTEMPTS = 5;
@@ -52,14 +51,6 @@ type SessionValidationServiceResult =
     };
 
 const inMemoryRateLimit = new Map<string, InMemoryRateLimitRecord>();
-
-function tokenHash(sessionToken: string): string {
-  return createHash("sha256").update(sessionToken).digest("hex");
-}
-
-function sessionToken(): string {
-  return `${randomUUID()}${randomBytes(16).toString("hex")}`;
-}
 
 function activeSessionKey(examId: string, candidateRecordId: string): string {
   return `auth:active:${examId}:${candidateRecordId}`;
@@ -341,8 +332,8 @@ export async function loginCandidate(
 
   await clearFailedLogins(limiterKey);
 
-  const rawToken = sessionToken();
-  const tokenDigest = tokenHash(rawToken);
+  const rawToken = randomToken();
+  const tokenDigest = hashToken(rawToken);
   const examRemainingSeconds = Math.max(60, Math.floor((exam.endsAt.getTime() - now.getTime()) / 1000));
   const ttlSeconds = Math.min(SESSION_MAX_TTL_SECONDS, examRemainingSeconds);
   const expiresAt = new Date(now.getTime() + ttlSeconds * 1000);
@@ -411,7 +402,7 @@ export async function validateSession(
     return buildAuthError(400, "INVALID_REQUEST", "sessionToken and examId are required.");
   }
 
-  const tokenDigest = tokenHash(rawSessionToken);
+  const tokenDigest = hashToken(rawSessionToken);
   const session = await resolveSessionByToken(tokenDigest);
   if (!session || session.examId !== examId) {
     return buildAuthError(401, "SESSION_NOT_FOUND", "Session is not valid.");

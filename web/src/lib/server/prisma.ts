@@ -26,3 +26,8 @@ if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prismaPool = pool;
   globalForPrisma.prismaAdapter = adapter;
 }
+
+export async function closePrismaConnections(): Promise<void> {
+  await prisma.$disconnect();
+  await pool.end();
+}

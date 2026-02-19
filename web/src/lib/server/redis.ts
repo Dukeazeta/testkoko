@@ -29,7 +29,15 @@ function isRedisRequired(): boolean {
   return process.env.NODE_ENV === "production";
 }
 
+function skipRedisInTest(): boolean {
+  return process.env.NODE_ENV === "test" && process.env.USE_REDIS_IN_TEST !== "true";
+}
+
 export async function getRedisClient(): Promise<RedisClientType | null> {
+  if (skipRedisInTest()) {
+    return null;
+  }
+
   const required = isRedisRequired();
   const redisUrl = process.env.REDIS_URL;
 
@@ -72,4 +80,17 @@ export async function getRedisClient(): Promise<RedisClientType | null> {
     });
 
   return globalForRedis.redisConnecting;
+}
+
+export async function closeRedisClient(): Promise<void> {
+  if (globalForRedis.redisConnecting) {
+    await globalForRedis.redisConnecting.catch(() => null);
+  }
+
+  if (globalForRedis.redisClient?.isOpen) {
+    await globalForRedis.redisClient.quit();
+  }
+
+  globalForRedis.redisClient = undefined;
+  globalForRedis.redisConnecting = undefined;
 }

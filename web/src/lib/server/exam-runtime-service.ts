@@ -45,6 +45,22 @@ type SubmitResult =
       body: ExamRuntimeErrorResponse;
     };
 
+export interface FinalizedSubmission {
+  receiptId: string;
+  submittedAt: Date;
+  mode: SubmissionMode;
+  totalQuestions: number;
+  answeredQuestions: number;
+  correctAnswers: number;
+  scorePercent: number;
+}
+
+export interface FinalizeSubmissionResult {
+  alreadySubmitted: boolean;
+  blocked: boolean;
+  submission: FinalizedSubmission | null;
+}
+
 type RuntimeContextResult =
   | {
       ok: true;
@@ -53,6 +69,7 @@ type RuntimeContextResult =
         examId: string;
         candidateRecordId: string;
         expiresAt: Date;
+        extendedUntil: Date | null;
         status: SessionStatus;
       };
       exam: {
@@ -94,6 +111,14 @@ function timeRemainingSeconds(expiresAt: Date, examEndsAt: Date): number {
   return Math.max(0, Math.floor((hardDeadlineMs - Date.now()) / 1000));
 }
 
+function effectiveExamEnd(examEndsAt: Date, extendedUntil: Date | null): Date {
+  if (!extendedUntil) {
+    return examEndsAt;
+  }
+
+  return extendedUntil.getTime() > examEndsAt.getTime() ? extendedUntil : examEndsAt;
+}
+
 function deterministicOrderKey(sessionId: string, questionId: string): string {
   return createHash("sha256").update(`${sessionId}:${questionId}`).digest("hex");
 }
@@ -118,17 +143,148 @@ function createReceiptId(): string {
   return `TK-${Date.now().toString(36).toUpperCase()}-${randomUUID().slice(0, 8).toUpperCase()}`;
 }
 
+export async function finalizeSubmissionBySessionId(
+  sessionId: string,
+  mode: SubmissionMode,
+): Promise<FinalizeSubmissionResult> {
+  const submittedAt = new Date();
+
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const existingSubmission = await tx.submission.findUnique({
+        where: {
+          sessionId,
+        },
+      });
+
+      if (existingSubmission) {
+        return {
+          alreadySubmitted: true,
+          blocked: false,
+          submission: existingSubmission,
+        };
+      }
+
+      const currentSession = await tx.examSession.findUnique({
+        where: {
+          id: sessionId,
+        },
+      });
+
+      if (!currentSession || currentSession.status !== SessionStatus.active) {
+        return {
+          alreadySubmitted: false,
+          blocked: true,
+          submission: null,
+        };
+      }
+
+      const [questionsForSession, answers] = await Promise.all([
+        tx.sessionQuestion.findMany({
+          where: {
+            sessionId,
+          },
+          include: {
+            question: {
+              select: {
+                id: true,
+                correctOption: true,
+              },
+            },
+          },
+        }),
+        tx.answer.findMany({
+          where: {
+            sessionId,
+          },
+          select: {
+            questionId: true,
+            selectedOption: true,
+          },
+        }),
+      ]);
+
+      const examQuestions =
+        questionsForSession.length > 0
+          ? questionsForSession.map((entry) => ({ id: entry.questionId, correctOption: entry.question.correctOption }))
+          : await tx.question.findMany({
+              where: {
+                examId: currentSession.examId,
+              },
+              select: {
+                id: true,
+                correctOption: true,
+              },
+            });
+
+      const answersByQuestionId = new Map(answers.map((answer) => [answer.questionId, answer.selectedOption]));
+      const answeredQuestionIds = new Set(answers.map((answer) => answer.questionId));
+      const totalQuestions = examQuestions.length;
+      const answeredQuestions = examQuestions.reduce(
+        (count, question) => (answeredQuestionIds.has(question.id) ? count + 1 : count),
+        0,
+      );
+      const correctAnswers = examQuestions.reduce((count, question) => {
+        return answersByQuestionId.get(question.id) === question.correctOption ? count + 1 : count;
+      }, 0);
+
+      const scorePercent = totalQuestions === 0 ? 0 : Number(((correctAnswers / totalQuestions) * 100).toFixed(2));
+
+      const submission = await tx.submission.create({
+        data: {
+          sessionId,
+          examId: currentSession.examId,
+          candidateRecordId: currentSession.candidateRecordId,
+          receiptId: createReceiptId(),
+          mode,
+          totalQuestions,
+          answeredQuestions,
+          correctAnswers,
+          scorePercent,
+          submittedAt,
+        },
+      });
+
+      await tx.examSession.update({
+        where: {
+          id: sessionId,
+        },
+        data: {
+          status: SessionStatus.submitted,
+          submittedAt,
+        },
+      });
+
+      return {
+        alreadySubmitted: false,
+        blocked: false,
+        submission,
+      };
+    });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      const existingSubmission = await prisma.submission.findUnique({
+        where: {
+          sessionId,
+        },
+      });
+
+      if (existingSubmission) {
+        return {
+          alreadySubmitted: true,
+          blocked: false,
+          submission: existingSubmission,
+        };
+      }
+    }
+
+    throw error;
+  }
+}
+
 function buildSubmitSuccess(
   sessionId: string,
-  submission: {
-    receiptId: string;
-    submittedAt: Date;
-    mode: SubmissionMode;
-    totalQuestions: number;
-    answeredQuestions: number;
-    correctAnswers: number;
-    scorePercent: number;
-  },
+  submission: FinalizedSubmission,
   alreadySubmitted: boolean,
 ): { status: number; body: ExamSubmitSuccessResponse } {
   return {
@@ -155,15 +311,7 @@ async function resolveSubmittedSession(
   sessionToken: string | undefined,
 ): Promise<{
   sessionId: string;
-  submission: {
-    receiptId: string;
-    submittedAt: Date;
-    mode: SubmissionMode;
-    totalQuestions: number;
-    answeredQuestions: number;
-    correctAnswers: number;
-    scorePercent: number;
-  };
+  submission: FinalizedSubmission;
 } | null> {
   const normalizedExamId = examId?.trim();
   const normalizedToken = sessionToken?.trim();
@@ -274,6 +422,7 @@ async function resolveRuntimeContext(request: ExamRuntimeRequest): Promise<Runti
       examId: session.examId,
       candidateRecordId: session.candidateRecordId,
       expiresAt: session.expiresAt,
+      extendedUntil: session.extendedUntil,
       status: session.status,
     },
     exam: session.exam,
@@ -347,7 +496,8 @@ export async function getExamRuntime(request: ExamRuntimeRequest): Promise<Runti
   }
 
   const now = new Date();
-  if (now < context.exam.startsAt || now > context.exam.endsAt) {
+  const runtimeEndsAt = effectiveExamEnd(context.exam.endsAt, context.session.extendedUntil);
+  if (now < context.exam.startsAt || now > runtimeEndsAt) {
     return runtimeError(403, "EXAM_CLOSED", "Exam is outside the active runtime window.");
   }
 
@@ -376,7 +526,7 @@ export async function getExamRuntime(request: ExamRuntimeRequest): Promise<Runti
         candidateId: context.candidate.candidateId,
         candidateName: context.candidate.displayName,
         title: context.exam.title,
-        timeRemainingSeconds: timeRemainingSeconds(context.session.expiresAt, context.exam.endsAt),
+        timeRemainingSeconds: timeRemainingSeconds(context.session.expiresAt, runtimeEndsAt),
         questions: sessionQuestions.map((sessionQuestion) => {
           const answer = answerByQuestionId.get(sessionQuestion.questionId);
 
@@ -415,7 +565,8 @@ export async function autosaveExamAnswer(payload: ExamAutosaveRequestBody): Prom
   }
 
   const now = new Date();
-  if (now > context.exam.endsAt) {
+  const runtimeEndsAt = effectiveExamEnd(context.exam.endsAt, context.session.extendedUntil);
+  if (now > runtimeEndsAt) {
     return runtimeError(403, "EXAM_CLOSED", "Exam has closed. Answers can no longer be updated.");
   }
 
@@ -493,132 +644,11 @@ export async function submitExam(payload: ExamSubmitRequestBody): Promise<Submit
   }
 
   const mode = resolveSubmissionMode(payload.mode);
-  const submittedAt = new Date();
+  const outcome = await finalizeSubmissionBySessionId(context.session.id, mode);
 
-  try {
-    const outcome = await prisma.$transaction(async (tx) => {
-      const existingSubmission = await tx.submission.findUnique({
-        where: {
-          sessionId: context.session.id,
-        },
-      });
-
-      if (existingSubmission) {
-        return {
-          alreadySubmitted: true,
-          submission: existingSubmission,
-          blocked: false,
-        };
-      }
-
-      const currentSession = await tx.examSession.findUnique({
-        where: {
-          id: context.session.id,
-        },
-      });
-
-      if (!currentSession || currentSession.status !== SessionStatus.active) {
-        return {
-          alreadySubmitted: false,
-          submission: null,
-          blocked: true,
-        };
-      }
-
-      const [questionsForSession, answers] = await Promise.all([
-        tx.sessionQuestion.findMany({
-          where: {
-            sessionId: context.session.id,
-          },
-          include: {
-            question: {
-              select: {
-                id: true,
-                correctOption: true,
-              },
-            },
-          },
-        }),
-        tx.answer.findMany({
-          where: {
-            sessionId: context.session.id,
-          },
-          select: {
-            questionId: true,
-            selectedOption: true,
-          },
-        }),
-      ]);
-
-      const answersByQuestionId = new Map(answers.map((answer) => [answer.questionId, answer.selectedOption]));
-      const totalQuestions = questionsForSession.length;
-      const answeredQuestions = answers.length;
-      const correctAnswers = questionsForSession.reduce((count, entry) => {
-        return answersByQuestionId.get(entry.questionId) === entry.question.correctOption ? count + 1 : count;
-      }, 0);
-
-      const scorePercent = totalQuestions === 0 ? 0 : Number(((correctAnswers / totalQuestions) * 100).toFixed(2));
-
-      const submission = await tx.submission.create({
-        data: {
-          sessionId: context.session.id,
-          examId: context.exam.id,
-          candidateRecordId: context.session.candidateRecordId,
-          receiptId: createReceiptId(),
-          mode,
-          totalQuestions,
-          answeredQuestions,
-          correctAnswers,
-          scorePercent,
-          submittedAt,
-        },
-      });
-
-      await tx.examSession.update({
-        where: {
-          id: context.session.id,
-        },
-        data: {
-          status: SessionStatus.submitted,
-          submittedAt,
-        },
-      });
-
-      return {
-        alreadySubmitted: false,
-        submission,
-        blocked: false,
-      };
-    });
-
-    if (outcome.blocked || !outcome.submission) {
-      const existingSubmission = await prisma.submission.findUnique({
-        where: {
-          sessionId: context.session.id,
-        },
-      });
-
-      if (existingSubmission) {
-        return buildSubmitSuccess(context.session.id, existingSubmission, true);
-      }
-
-      return runtimeError(409, "SUBMISSION_NOT_ALLOWED", "Session is not active for submission.");
-    }
-
-    return buildSubmitSuccess(context.session.id, outcome.submission, outcome.alreadySubmitted);
-  } catch (error) {
-    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
-      const existingSubmission = await prisma.submission.findUnique({
-        where: {
-          sessionId: context.session.id,
-        },
-      });
-
-      if (existingSubmission) {
-        return buildSubmitSuccess(context.session.id, existingSubmission, true);
-      }
-    }
-
-    throw error;
+  if (outcome.blocked || !outcome.submission) {
+    return runtimeError(409, "SUBMISSION_NOT_ALLOWED", "Session is not active for submission.");
   }
+
+  return buildSubmitSuccess(context.session.id, outcome.submission, outcome.alreadySubmitted);
 }

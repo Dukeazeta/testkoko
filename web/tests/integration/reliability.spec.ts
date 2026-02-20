@@ -6,7 +6,7 @@ import { loginCandidate, validateSession } from "../../src/lib/server/auth-servi
 import { getExamRuntime, autosaveExamAnswer, finalizeSubmissionBySessionId, submitExam } from "../../src/lib/server/exam-runtime-service";
 import { ingestExamEvent } from "../../src/lib/server/exam-monitoring-service";
 import { closePrismaConnections, prisma } from "../../src/lib/server/prisma";
-import { closeRedisClient } from "../../src/lib/server/redis";
+
 
 describe("Reliability integration flows", () => {
   beforeEach(async () => {
@@ -14,7 +14,7 @@ describe("Reliability integration flows", () => {
   });
 
   afterAll(async () => {
-    await closeRedisClient();
+
     await closePrismaConnections();
     await closeSeedResources();
   });

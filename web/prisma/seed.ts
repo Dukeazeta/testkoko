@@ -1,11 +1,10 @@
 import "dotenv/config";
 
 import { PrismaPg } from "@prisma/adapter-pg";
-import { AdminRole, PrismaClient, SessionPolicy } from "@prisma/client";
+import { PrismaClient, SessionPolicy } from "@prisma/client";
 import { Pool } from "pg";
 import { pathToFileURL } from "node:url";
-
-import { hashPassword } from "../src/lib/server/security";
+import { hash } from "bcryptjs";
 
 const databaseUrl =
   process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/testkoko?schema=public";
@@ -17,9 +16,8 @@ const prisma = new PrismaClient({ adapter });
 export async function seedDatabase() {
   const now = Date.now();
 
-  await prisma.adminSession.deleteMany();
+  // Clean up in dependency order
   await prisma.eventLog.deleteMany();
-  await prisma.adminActionLog.deleteMany();
   await prisma.strikeState.deleteMany();
   await prisma.submission.deleteMany();
   await prisma.answer.deleteMany();
@@ -28,8 +26,24 @@ export async function seedDatabase() {
   await prisma.question.deleteMany();
   await prisma.candidate.deleteMany();
   await prisma.exam.deleteMany();
-  await prisma.adminUser.deleteMany();
+  await prisma.session.deleteMany();
+  await prisma.account.deleteMany();
+  await prisma.user.deleteMany();
 
+  // Create demo lecturer
+  const lecturerEmail = (process.env.ADMIN_EMAIL ?? "lecturer@testkoko.local").trim().toLowerCase();
+  const lecturerPassword = process.env.ADMIN_PASSWORD ?? "admin12345";
+  const lecturerName = process.env.ADMIN_DISPLAY_NAME ?? "Demo Lecturer";
+
+  const lecturer = await prisma.user.create({
+    data: {
+      email: lecturerEmail,
+      name: lecturerName,
+      password: await hash(lecturerPassword, 12),
+    },
+  });
+
+  // Create demo exam
   const exam = await prisma.exam.create({
     data: {
       id: "exam-mth101",
@@ -38,6 +52,7 @@ export async function seedDatabase() {
       startsAt: new Date(now - 30 * 60 * 1000),
       endsAt: new Date(now + 3 * 60 * 60 * 1000),
       sessionPolicy: SessionPolicy.BlockNew,
+      lecturerId: lecturer.id,
     },
   });
 
@@ -99,32 +114,6 @@ export async function seedDatabase() {
       },
     ],
   });
-
-  const adminEmail = (process.env.ADMIN_EMAIL ?? "admin@testkoko.local").trim().toLowerCase();
-  const adminPassword = process.env.ADMIN_PASSWORD ?? "admin12345";
-  const adminDisplayName = process.env.ADMIN_DISPLAY_NAME ?? "System Admin";
-
-  await prisma.adminUser.create({
-    data: {
-      email: adminEmail,
-      displayName: adminDisplayName,
-      role: AdminRole.SUPER_ADMIN,
-      passwordHash: hashPassword(adminPassword),
-    },
-  });
-
-  const proctorEmail = process.env.PROCTOR_EMAIL?.trim().toLowerCase();
-  const proctorPassword = process.env.PROCTOR_PASSWORD?.trim();
-  if (proctorEmail && proctorPassword) {
-    await prisma.adminUser.create({
-      data: {
-        email: proctorEmail,
-        displayName: process.env.PROCTOR_DISPLAY_NAME ?? "Exam Proctor",
-        role: AdminRole.PROCTOR,
-        passwordHash: hashPassword(proctorPassword),
-      },
-    });
-  }
 }
 
 export async function closeSeedResources() {

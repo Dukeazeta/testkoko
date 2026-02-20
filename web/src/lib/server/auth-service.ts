@@ -14,7 +14,6 @@ import {
 } from "@/lib/auth/candidate-identity";
 import { evaluateSessionPolicy } from "@/lib/exam/session-policy";
 import { prisma } from "@/lib/server/prisma";
-import { getRedisClient } from "@/lib/server/redis";
 import { hashToken, randomToken } from "@/lib/server/security";
 
 const FAILED_LOGIN_WINDOW_SECONDS = 15 * 60;
@@ -32,33 +31,25 @@ interface InMemoryRateLimitRecord {
 
 type LoginServiceResult =
   | {
-      status: 200;
-      body: CandidateLoginSuccessResponse;
-    }
+    status: 200;
+    body: CandidateLoginSuccessResponse;
+  }
   | {
-      status: number;
-      body: AuthErrorResponse;
-    };
+    status: number;
+    body: AuthErrorResponse;
+  };
 
 type SessionValidationServiceResult =
   | {
-      status: 200;
-      body: CandidateSessionValidationSuccessResponse;
-    }
+    status: 200;
+    body: CandidateSessionValidationSuccessResponse;
+  }
   | {
-      status: number;
-      body: AuthErrorResponse;
-    };
+    status: number;
+    body: AuthErrorResponse;
+  };
 
 const inMemoryRateLimit = new Map<string, InMemoryRateLimitRecord>();
-
-function activeSessionKey(examId: string, candidateRecordId: string): string {
-  return `auth:active:${examId}:${candidateRecordId}`;
-}
-
-function sessionTokenKey(tokenDigest: string): string {
-  return `auth:token:${tokenDigest}`;
-}
 
 function loginRateLimitKey(examId: string, normalizedCandidateId: string, clientIp: string): string {
   return `auth:failed:${examId}:${normalizedCandidateId}:${clientIp}`;
@@ -96,22 +87,7 @@ function readMemoryLimiterState(key: string, now: number): InMemoryRateLimitReco
   return existing;
 }
 
-async function checkRateLimit(key: string): Promise<{ blocked: boolean; retryAfterSeconds?: number }> {
-  const redis = await getRedisClient();
-
-  if (redis) {
-    const count = Number(await redis.get(key)) || 0;
-    if (count < MAX_FAILED_LOGIN_ATTEMPTS) {
-      return { blocked: false };
-    }
-
-    const ttl = await redis.ttl(key);
-    return {
-      blocked: true,
-      retryAfterSeconds: ttl > 0 ? ttl : FAILED_LOGIN_WINDOW_SECONDS,
-    };
-  }
-
+function checkRateLimit(key: string): { blocked: boolean; retryAfterSeconds?: number } {
   const now = Date.now();
   const state = readMemoryLimiterState(key, now);
   if (state.timestamps.length < MAX_FAILED_LOGIN_ATTEMPTS) {
@@ -126,69 +102,14 @@ async function checkRateLimit(key: string): Promise<{ blocked: boolean; retryAft
   };
 }
 
-async function recordFailedLogin(key: string): Promise<void> {
-  const redis = await getRedisClient();
-
-  if (redis) {
-    const next = await redis.incr(key);
-    if (next === 1) {
-      await redis.expire(key, FAILED_LOGIN_WINDOW_SECONDS);
-    }
-    return;
-  }
-
+function recordFailedLogin(key: string): void {
   const now = Date.now();
   const state = readMemoryLimiterState(key, now);
   state.timestamps.push(now);
 }
 
-async function clearFailedLogins(key: string): Promise<void> {
-  const redis = await getRedisClient();
-  if (redis) {
-    await redis.del(key);
-    return;
-  }
-
+function clearFailedLogins(key: string): void {
   inMemoryRateLimit.delete(key);
-}
-
-async function setSessionKeys(
-  examId: string,
-  candidateRecordId: string,
-  tokenDigest: string,
-  sessionId: string,
-  ttlSeconds: number,
-): Promise<void> {
-  const redis = await getRedisClient();
-  if (!redis) {
-    return;
-  }
-
-  await redis.set(activeSessionKey(examId, candidateRecordId), sessionId, {
-    EX: ttlSeconds,
-  });
-
-  await redis.set(sessionTokenKey(tokenDigest), sessionId, {
-    EX: ttlSeconds,
-  });
-}
-
-async function clearSessionKeys(examId: string, candidateRecordId: string, tokenDigest: string): Promise<void> {
-  const redis = await getRedisClient();
-  if (!redis) {
-    return;
-  }
-
-  await redis.del([activeSessionKey(examId, candidateRecordId), sessionTokenKey(tokenDigest)]);
-}
-
-async function clearActiveSessionPointer(examId: string, candidateRecordId: string): Promise<void> {
-  const redis = await getRedisClient();
-  if (!redis) {
-    return;
-  }
-
-  await redis.del(activeSessionKey(examId, candidateRecordId));
 }
 
 async function findExam(payload: CandidateLoginRequestBody) {
@@ -210,27 +131,7 @@ async function findExam(payload: CandidateLoginRequestBody) {
 }
 
 async function readActiveSession(examId: string, candidateRecordId: string) {
-  const redis = await getRedisClient();
   const now = new Date();
-
-  if (redis) {
-    const cachedSessionId = await redis.get(activeSessionKey(examId, candidateRecordId));
-    if (cachedSessionId) {
-      const session = await prisma.examSession.findUnique({
-        where: { id: cachedSessionId },
-      });
-
-      if (session && session.status === SessionStatus.active && session.expiresAt > now) {
-        return session;
-      }
-
-      if (session) {
-        await clearSessionKeys(examId, candidateRecordId, session.tokenHash);
-      } else {
-        await clearActiveSessionPointer(examId, candidateRecordId);
-      }
-    }
-  }
 
   const session = await prisma.examSession.findFirst({
     where: {
@@ -246,13 +147,7 @@ async function readActiveSession(examId: string, candidateRecordId: string) {
     },
   });
 
-  if (!session) {
-    return null;
-  }
-
-  const ttlSeconds = Math.max(1, Math.ceil((session.expiresAt.getTime() - now.getTime()) / 1000));
-  await setSessionKeys(examId, candidateRecordId, session.tokenHash, session.id, ttlSeconds);
-  return session;
+  return session ?? null;
 }
 
 export async function loginCandidate(
@@ -279,7 +174,7 @@ export async function loginCandidate(
   const normalizedSurname = normalizeSurname(surnameInput);
 
   const limiterKey = loginRateLimitKey(exam.id, normalizedCandidateId, context.clientIp);
-  const rateLimit = await checkRateLimit(limiterKey);
+  const rateLimit = checkRateLimit(limiterKey);
   if (rateLimit.blocked) {
     return buildAuthError(
       429,
@@ -304,7 +199,7 @@ export async function loginCandidate(
   });
 
   if (!candidate || candidate.surnameNormalized !== normalizedSurname) {
-    await recordFailedLogin(limiterKey);
+    recordFailedLogin(limiterKey);
     return buildAuthError(401, "INVALID_CREDENTIALS", "Invalid sign-in details.");
   }
 
@@ -326,11 +221,9 @@ export async function loginCandidate(
         revokedAt: now,
       },
     });
-
-    await clearSessionKeys(activeSession.examId, activeSession.candidateRecordId, activeSession.tokenHash);
   }
 
-  await clearFailedLogins(limiterKey);
+  clearFailedLogins(limiterKey);
 
   const rawToken = randomToken();
   const tokenDigest = hashToken(rawToken);
@@ -350,8 +243,6 @@ export async function loginCandidate(
     },
   });
 
-  await setSessionKeys(exam.id, candidate.id, tokenDigest, session.id, ttlSeconds);
-
   return {
     status: 200,
     body: {
@@ -369,29 +260,6 @@ export async function loginCandidate(
   };
 }
 
-async function resolveSessionByToken(tokenDigest: string) {
-  const redis = await getRedisClient();
-
-  if (redis) {
-    const cachedSessionId = await redis.get(sessionTokenKey(tokenDigest));
-    if (cachedSessionId) {
-      const session = await prisma.examSession.findUnique({
-        where: { id: cachedSessionId },
-      });
-
-      if (session && session.tokenHash === tokenDigest) {
-        return session;
-      }
-    }
-  }
-
-  return prisma.examSession.findUnique({
-    where: {
-      tokenHash: tokenDigest,
-    },
-  });
-}
-
 export async function validateSession(
   payload: CandidateSessionValidationRequestBody,
 ): Promise<SessionValidationServiceResult> {
@@ -403,7 +271,10 @@ export async function validateSession(
   }
 
   const tokenDigest = hashToken(rawSessionToken);
-  const session = await resolveSessionByToken(tokenDigest);
+  const session = await prisma.examSession.findUnique({
+    where: { tokenHash: tokenDigest },
+  });
+
   if (!session || session.examId !== examId) {
     return buildAuthError(401, "SESSION_NOT_FOUND", "Session is not valid.");
   }
@@ -412,12 +283,8 @@ export async function validateSession(
   if (session.expiresAt <= now) {
     await prisma.examSession.update({
       where: { id: session.id },
-      data: {
-        status: SessionStatus.expired,
-      },
+      data: { status: SessionStatus.expired },
     });
-
-    await clearSessionKeys(session.examId, session.candidateRecordId, session.tokenHash);
     return buildAuthError(401, "SESSION_EXPIRED", "Session has expired. Sign in again.");
   }
 
@@ -431,9 +298,7 @@ export async function validateSession(
   }
 
   const candidate = await prisma.candidate.findUnique({
-    where: {
-      id: session.candidateRecordId,
-    },
+    where: { id: session.candidateRecordId },
   });
 
   if (!candidate) {
@@ -441,16 +306,9 @@ export async function validateSession(
   }
 
   await prisma.examSession.update({
-    where: {
-      id: session.id,
-    },
-    data: {
-      lastSeenAt: now,
-    },
+    where: { id: session.id },
+    data: { lastSeenAt: now },
   });
-
-  const ttlSeconds = Math.max(1, Math.ceil((session.expiresAt.getTime() - now.getTime()) / 1000));
-  await setSessionKeys(session.examId, session.candidateRecordId, session.tokenHash, session.id, ttlSeconds);
 
   return {
     status: 200,
@@ -475,38 +333,4 @@ export function getClientIp(request: Request): string {
 
   const realIp = request.headers.get("x-real-ip");
   return realIp?.trim() || "unknown";
-}
-
-export async function getSeededAuthReference(): Promise<{
-  examId: string;
-  examAccessCode: string;
-  demoCandidates: Array<{ candidateId: string; surname: string }>;
-}> {
-  const exam = await prisma.exam.findUnique({
-    where: { id: "exam-mth101" },
-    include: {
-      candidates: {
-        orderBy: {
-          candidateId: "asc",
-        },
-      },
-    },
-  });
-
-  if (!exam) {
-    return {
-      examId: "",
-      examAccessCode: "",
-      demoCandidates: [],
-    };
-  }
-
-  return {
-    examId: exam.id,
-    examAccessCode: exam.accessCode,
-    demoCandidates: exam.candidates.map((candidate) => ({
-      candidateId: candidate.candidateId,
-      surname: candidate.surnameNormalized,
-    })),
-  };
 }

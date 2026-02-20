@@ -2,8 +2,6 @@ import { Prisma, SessionStatus, StrikeAction } from "@prisma/client";
 
 import type { CandidateSessionValidationSuccessResponse } from "@/lib/auth/contracts";
 import type {
-  AdminTimelineRequest,
-  AdminTimelineSuccessResponse,
   AdminMonitoringRequest,
   AdminMonitoringSuccessResponse,
   ExamEventIngestRequestBody,
@@ -12,40 +10,29 @@ import type {
 } from "@/lib/exam/contracts";
 import { evaluateStrike } from "@/lib/exam/strike-engine";
 import type { StrikeEventType, StrikeThresholds } from "@/lib/exam/types";
-import type { AdminActor } from "@/lib/server/admin-auth-service";
 import { prisma } from "@/lib/server/prisma";
 import { submitExam } from "@/lib/server/exam-runtime-service";
 import { validateSession } from "@/lib/server/auth-service";
 
 type EventIngestResult =
   | {
-      status: number;
-      body: ExamEventIngestSuccessResponse;
-    }
+    status: number;
+    body: ExamEventIngestSuccessResponse;
+  }
   | {
-      status: number;
-      body: ExamRuntimeErrorResponse;
-    };
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
 
 type MonitoringResult =
   | {
-      status: number;
-      body: AdminMonitoringSuccessResponse;
-    }
+    status: number;
+    body: AdminMonitoringSuccessResponse;
+  }
   | {
-      status: number;
-      body: ExamRuntimeErrorResponse;
-    };
-
-type TimelineResult =
-  | {
-      status: number;
-      body: AdminTimelineSuccessResponse;
-    }
-  | {
-      status: number;
-      body: ExamRuntimeErrorResponse;
-    };
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
 
 interface ActiveSessionRecord {
   id: string;
@@ -79,14 +66,14 @@ function effectiveExamEnd(examEndsAt: Date, extendedUntil: Date | null): Date {
 
 type ActiveSessionContext =
   | {
-      ok: true;
-      session: ActiveSessionRecord;
-    }
+    ok: true;
+    session: ActiveSessionRecord;
+  }
   | {
-      ok: false;
-      status: number;
-      body: ExamRuntimeErrorResponse;
-    };
+    ok: false;
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
 
 const acceptedEvents: StrikeEventType[] = [
   "visibility_hidden",
@@ -228,9 +215,9 @@ export async function ingestExamEvent(payload: ExamEventIngestRequestBody): Prom
   const metadata: Prisma.InputJsonValue | undefined =
     payload.metadata && typeof payload.metadata === "object"
       ? ({
-          ...payload.metadata,
-          hiddenDurationSeconds: payload.hiddenDurationSeconds,
-        } as Prisma.InputJsonObject)
+        ...payload.metadata,
+        hiddenDurationSeconds: payload.hiddenDurationSeconds,
+      } as Prisma.InputJsonObject)
       : payload.hiddenDurationSeconds !== undefined
         ? ({ hiddenDurationSeconds: payload.hiddenDurationSeconds } as Prisma.InputJsonObject)
         : undefined;
@@ -300,11 +287,9 @@ export async function ingestExamEvent(payload: ExamEventIngestRequestBody): Prom
   };
 }
 
-export async function getAdminMonitoring(
+export async function getExamMonitoring(
   request: AdminMonitoringRequest,
-  actor: AdminActor,
 ): Promise<MonitoringResult> {
-  void actor;
   const examId = request.examId?.trim();
   if (!examId) {
     return runtimeError(400, "INVALID_REQUEST", "examId is required.");
@@ -354,11 +339,11 @@ export async function getAdminMonitoring(
         ? "Submitted"
         : session.status === SessionStatus.revoked || session.status === SessionStatus.expired
           ? "Disconnected"
-        : strikeState?.isDisconnected
-          ? "Disconnected"
-          : flagged
-            ? "Flagged"
-            : "Active";
+          : strikeState?.isDisconnected
+            ? "Disconnected"
+            : flagged
+              ? "Flagged"
+              : "Active";
 
     return {
       sessionId: session.id,
@@ -386,85 +371,6 @@ export async function getAdminMonitoring(
         flaggedCount: candidates.filter((candidate) => candidate.status === "Flagged").length,
         submittedCount: candidates.filter((candidate) => candidate.status === "Submitted").length,
         candidates,
-      },
-    },
-  };
-}
-
-export async function getAdminTimeline(
-  request: AdminTimelineRequest,
-  actor: AdminActor,
-): Promise<TimelineResult> {
-  void actor;
-  const examId = request.examId?.trim();
-  const sessionId = request.sessionId?.trim();
-
-  if (!examId || !sessionId) {
-    return runtimeError(400, "INVALID_REQUEST", "examId and sessionId are required.");
-  }
-
-  const session = await prisma.examSession.findFirst({
-    where: {
-      id: sessionId,
-      examId,
-    },
-    include: {
-      candidate: {
-        select: {
-          candidateId: true,
-          displayName: true,
-        },
-      },
-      eventLogs: {
-        orderBy: {
-          createdAt: "asc",
-        },
-      },
-      adminActions: {
-        orderBy: {
-          createdAt: "asc",
-        },
-      },
-    },
-  });
-
-  if (!session || !session.candidate) {
-    return runtimeError(404, "SESSION_NOT_FOUND", "Session cannot be found for timeline view.");
-  }
-
-  const eventEntries = session.eventLogs.map((entry) => ({
-    id: entry.id,
-    kind: "event" as const,
-    createdAt: entry.createdAt.toISOString(),
-    label: entry.eventType,
-    detail: `Event recorded with +${entry.addedStrikes} strikes`,
-    strikeDelta: entry.addedStrikes,
-    strikeTotalAfter: entry.totalStrikesAfter,
-  }));
-
-  const actionEntries = session.adminActions.map((entry) => ({
-    id: entry.id,
-    kind: "admin_action" as const,
-    createdAt: entry.createdAt.toISOString(),
-    label: entry.actionType,
-    detail: entry.metadata && typeof entry.metadata === "object" ? JSON.stringify(entry.metadata) : "Admin action",
-    actor: entry.adminIdentity,
-  }));
-
-  const entries = [...eventEntries, ...actionEntries].sort((left, right) => {
-    return new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime();
-  });
-
-  return {
-    status: 200,
-    body: {
-      ok: true,
-      data: {
-        examId,
-        sessionId,
-        candidateId: session.candidate.candidateId,
-        candidateName: session.candidate.displayName,
-        entries,
       },
     },
   };

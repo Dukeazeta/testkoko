@@ -1,12 +1,13 @@
 import type { Metadata } from "next";
-import { Manrope, Poppins } from "next/font/google";
+import { Syne, Manrope, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
+import Providers from "./providers";
 
-const poppins = Poppins({
+const syne = Syne({
   subsets: ["latin"],
-  variable: "--font-poppins",
+  variable: "--font-syne",
   display: "swap",
-  weight: ["400", "500", "600", "700"],
+  weight: ["400", "500", "600", "700", "800"],
 });
 
 const manrope = Manrope({
@@ -16,14 +17,21 @@ const manrope = Manrope({
   weight: ["400", "500", "600", "700"],
 });
 
+const jetbrains = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-jetbrains",
+  display: "swap",
+  weight: ["400", "500", "600", "700"],
+});
+
 export const metadata: Metadata = {
   title: "TestKOKO — Secure CBT, Reinvented",
   description:
-    "Mobile-first browser-based examination platform with military-grade anti-cheat detection, live monitoring, and auto-grading. Built for institutions that demand integrity.",
+    "Browser-based examination platform with anti-cheat detection, live monitoring, and auto-grading. Built for institutions that demand integrity.",
   openGraph: {
     title: "TestKOKO — Secure CBT, Reinvented",
     description:
-      "Mobile-first browser-based examination platform with military-grade anti-cheat detection.",
+      "Browser-based examination platform with anti-cheat detection.",
     siteName: "TestKOKO",
     type: "website",
   },
@@ -31,7 +39,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title: "TestKOKO — Secure CBT, Reinvented",
     description:
-      "Mobile-first browser-based examination platform with military-grade anti-cheat detection.",
+      "Browser-based examination platform with anti-cheat detection.",
   },
 };
 
@@ -41,8 +49,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${poppins.variable} ${manrope.variable}`}>
-      <body className="app-body antialiased">{children}</body>
+    <html lang="en" className={`${syne.variable} ${manrope.variable} ${jetbrains.variable}`}>
+      <body className="app-body antialiased">
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

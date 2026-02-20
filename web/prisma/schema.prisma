@@ -30,30 +30,75 @@ enum StrikeAction {
   AUTO_SUBMIT
 }
 
-enum AdminRole {
-  SUPER_ADMIN
-  PROCTOR
+// --- NextAuth models ---
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
 }
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String?   @unique
+  emailVerified DateTime?
+  image         String?
+  password      String?
+  accounts      Account[]
+  sessions      Session[]
+  exams         Exam[]
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// --- App models ---
 
 model Exam {
   id            String       @id @default(cuid())
   accessCode    String       @unique
   title         String
+  duration      Int          @default(60)
   startsAt      DateTime
   endsAt        DateTime
   sessionPolicy SessionPolicy @default(BlockNew)
   warningThreshold Int       @default(3)
   temporaryLockThreshold Int @default(5)
   autoSubmitThreshold Int    @default(8)
+  lecturerId    String
+  lecturer      User         @relation(fields: [lecturerId], references: [id], onDelete: Cascade)
   candidates    Candidate[]
   sessions      ExamSession[]
   questions     Question[]
   submissions   Submission[]
-  similarityRuns SimilarityRun[]
-  similarityPairs SimilarityPair[]
   eventLogs     EventLog[]
   strikeStates  StrikeState[]
-  adminActions  AdminActionLog[]
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
 }
@@ -95,7 +140,6 @@ model ExamSession {
   submission        Submission?
   eventLogs         EventLog[]
   strikeState       StrikeState?
-  adminActions      AdminActionLog[]
 
   @@index([examId, candidateRecordId, status])
   @@index([status, expiresAt])
@@ -166,48 +210,6 @@ model Submission {
   @@index([examId, candidateRecordId])
 }
 
-model SimilarityRun {
-  id               String           @id @default(cuid())
-  examId           String
-  initiatedBy      String
-  answerWeight     Float            @default(0.7)
-  timingWeight     Float            @default(0.3)
-  scoreThreshold   Float            @default(0.75)
-  minCommonAnswers Int              @default(3)
-  generatedPairs   Int              @default(0)
-  createdAt        DateTime         @default(now())
-  exam             Exam             @relation(fields: [examId], references: [id], onDelete: Cascade)
-  pairs            SimilarityPair[]
-
-  @@index([examId, createdAt])
-}
-
-model SimilarityPair {
-  id                 String        @id @default(cuid())
-  runId              String
-  examId             String
-  leftSessionId      String
-  rightSessionId     String
-  leftCandidateId    String
-  rightCandidateId   String
-  leftCandidateName  String
-  rightCandidateName String
-  commonAnswered     Int
-  matchingAnswers    Int
-  answerSimilarity   Float
-  timingSimilarity   Float
-  combinedScore      Float
-  flagged            Boolean       @default(true)
-  reviewedAt         DateTime?
-  reviewedBy         String?
-  createdAt          DateTime      @default(now())
-  run                SimilarityRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  exam               Exam          @relation(fields: [examId], references: [id], onDelete: Cascade)
-
-  @@index([runId, combinedScore])
-  @@index([examId, combinedScore])
-}
-
 model EventLog {
   id                String      @id @default(cuid())
   sessionId         String
@@ -242,48 +244,4 @@ model StrikeState {
 
   @@index([examId, totalStrikes])
   @@index([examId, updatedAt])
-}
-
-model AdminActionLog {
-  id                String      @id @default(cuid())
-  examId            String
-  sessionId         String?
-  candidateRecordId String?
-  adminUserId       String?
-  actionType        String
-  metadata          Json?
-  adminIdentity     String
-  createdAt         DateTime    @default(now())
-  exam              Exam        @relation(fields: [examId], references: [id], onDelete: Cascade)
-  session           ExamSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
-  adminUser         AdminUser?  @relation(fields: [adminUserId], references: [id], onDelete: SetNull)
-
-  @@index([examId, createdAt])
-  @@index([sessionId])
-}
-
-model AdminUser {
-  id           String           @id @default(cuid())
-  email        String           @unique
-  displayName  String
-  role         AdminRole
-  passwordHash String
-  createdAt    DateTime         @default(now())
-  updatedAt    DateTime         @updatedAt
-  sessions     AdminSession[]
-  actions      AdminActionLog[]
-}
-
-model AdminSession {
-  id          String     @id @default(cuid())
-  adminUserId String
-  tokenHash   String     @unique
-  expiresAt   DateTime
-  revokedAt   DateTime?
-  clientIp    String
-  userAgent   String
-  createdAt   DateTime   @default(now())
-  adminUser   AdminUser  @relation(fields: [adminUserId], references: [id], onDelete: Cascade)
-
-  @@index([adminUserId, expiresAt])
 }

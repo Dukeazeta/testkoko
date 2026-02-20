@@ -10,38 +10,37 @@ import type {
   AdminRosterUploadSuccessResponse,
   ExamRuntimeErrorResponse,
 } from "@/lib/exam/contracts";
-import type { AdminActor } from "@/lib/server/admin-auth-service";
 import { prisma } from "@/lib/server/prisma";
 
 type AdminExamCreateResult =
   | {
-      status: number;
-      body: AdminExamCreateSuccessResponse;
-    }
+    status: number;
+    body: AdminExamCreateSuccessResponse;
+  }
   | {
-      status: number;
-      body: ExamRuntimeErrorResponse;
-    };
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
 
 type AdminExamListResult =
   | {
-      status: number;
-      body: AdminExamListSuccessResponse;
-    }
+    status: number;
+    body: AdminExamListSuccessResponse;
+  }
   | {
-      status: number;
-      body: ExamRuntimeErrorResponse;
-    };
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
 
 type AdminRosterUploadResult =
   | {
-      status: number;
-      body: AdminRosterUploadSuccessResponse;
-    }
+    status: number;
+    body: AdminRosterUploadSuccessResponse;
+  }
   | {
-      status: number;
-      body: ExamRuntimeErrorResponse;
-    };
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
 
 interface ParsedRosterRow {
   candidateId: string;
@@ -177,8 +176,8 @@ function parseRosterCsv(input: string): ParsedRosterCsv {
 
     const candidateIdValue = hasHeader
       ? cells[
-          headerIndex.get("candidateid") ?? headerIndex.get("candidate_id") ?? headerIndex.get("candidate id") ?? 0
-        ]
+      headerIndex.get("candidateid") ?? headerIndex.get("candidate_id") ?? headerIndex.get("candidate id") ?? 0
+      ]
       : cells[0];
     const surnameValue = hasHeader ? cells[headerIndex.get("surname") ?? 1] : cells[1];
     const displayNameValue = hasHeader
@@ -244,12 +243,11 @@ function toExamSummary(input: {
   };
 }
 
-export async function listAdminExams(): Promise<AdminExamListResult> {
+export async function listLecturerExams(lecturerId: string): Promise<AdminExamListResult> {
   const exams = await prisma.exam.findMany({
-    orderBy: {
-      createdAt: "desc",
-    },
-    take: 25,
+    where: { lecturerId },
+    orderBy: { createdAt: "desc" },
+    take: 50,
     include: {
       _count: {
         select: {
@@ -271,9 +269,9 @@ export async function listAdminExams(): Promise<AdminExamListResult> {
   };
 }
 
-export async function createAdminExam(
+export async function createExam(
   payload: AdminExamCreateRequestBody,
-  actor: AdminActor,
+  lecturerId: string,
 ): Promise<AdminExamCreateResult> {
   const accessCode = payload.accessCode?.trim().toUpperCase();
   const title = payload.title?.trim();
@@ -325,6 +323,7 @@ export async function createAdminExam(
           title,
           startsAt,
           endsAt,
+          lecturerId,
           sessionPolicy: normalizeSessionPolicy(payload.sessionPolicy),
           warningThreshold,
           temporaryLockThreshold,
@@ -343,23 +342,8 @@ export async function createAdminExam(
         });
       }
 
-      await tx.adminActionLog.create({
-        data: {
-          examId: created.id,
-          actionType: "create_exam",
-          adminUserId: actor.id,
-          adminIdentity: `${actor.displayName} <${actor.email}>`,
-          metadata: {
-            accessCode,
-            questionCount: questions.length,
-          } satisfies Prisma.InputJsonObject,
-        },
-      });
-
       return tx.exam.findUniqueOrThrow({
-        where: {
-          id: created.id,
-        },
+        where: { id: created.id },
         include: {
           _count: {
             select: {
@@ -392,7 +376,7 @@ export async function createAdminExam(
 export async function uploadExamRosterCsv(
   examIdInput: string,
   payload: AdminRosterUploadRequestBody,
-  actor: AdminActor,
+  lecturerId: string,
 ): Promise<AdminRosterUploadResult> {
   const examId = examIdInput.trim();
   const csv = payload.csv?.trim();
@@ -401,17 +385,15 @@ export async function uploadExamRosterCsv(
   }
 
   const exam = await prisma.exam.findUnique({
-    where: {
-      id: examId,
-    },
+    where: { id: examId },
   });
 
   if (!exam) {
     return runtimeError(404, "EXAM_NOT_FOUND", "Exam does not exist.");
   }
 
-  if (Date.now() >= exam.startsAt.getTime()) {
-    return runtimeError(409, "SUBMISSION_NOT_ALLOWED", "Roster can only be edited before exam start.");
+  if (exam.lecturerId !== lecturerId) {
+    return runtimeError(403, "FORBIDDEN", "You do not own this exam.");
   }
 
   const parsed = parseRosterCsv(csv);
@@ -435,9 +417,7 @@ export async function uploadExamRosterCsv(
 
       if (existing) {
         await tx.candidate.update({
-          where: {
-            id: existing.id,
-          },
+          where: { id: existing.id },
           data: {
             surnameNormalized: row.surnameNormalized,
             displayName: row.displayName,
@@ -456,21 +436,6 @@ export async function uploadExamRosterCsv(
         createdCount += 1;
       }
     }
-
-    await tx.adminActionLog.create({
-      data: {
-        examId,
-        actionType: "upload_roster",
-        adminUserId: actor.id,
-        adminIdentity: `${actor.displayName} <${actor.email}>`,
-        metadata: {
-          createdCount,
-          updatedCount,
-          issueCount: parsed.issues.length,
-          duplicateCount: parsed.duplicateCount,
-        } satisfies Prisma.InputJsonObject,
-      },
-    });
   });
 
   return {
@@ -487,4 +452,67 @@ export async function uploadExamRosterCsv(
       },
     },
   };
+}
+
+export async function exportExamResults(examId: string, lecturerId: string): Promise<string> {
+  const exam = await prisma.exam.findUnique({
+    where: { id: examId },
+    include: {
+      submissions: {
+        include: {
+          candidate: true,
+        },
+        orderBy: { submittedAt: "asc" },
+      },
+      candidates: true,
+    },
+  });
+
+  if (!exam || exam.lecturerId !== lecturerId) {
+    return "";
+  }
+
+  const lines = ["Matric Number,Name,Score (%),Correct Answers,Total Questions,Submitted At,Strikes"];
+
+  const submissionMap = new Map(exam.submissions.map((sub) => [sub.candidateRecordId, sub]));
+
+  for (const candidate of exam.candidates) {
+    const sub = submissionMap.get(candidate.id);
+
+    const strikeState = await prisma.strikeState.findFirst({
+      where: {
+        examId: exam.id,
+        candidateRecordId: candidate.id,
+      },
+      orderBy: { updatedAt: "desc" },
+    });
+
+    if (sub) {
+      lines.push(
+        [
+          candidate.candidateId,
+          `"${candidate.displayName}"`,
+          sub.scorePercent.toFixed(1),
+          sub.correctAnswers,
+          sub.totalQuestions,
+          sub.submittedAt.toISOString(),
+          strikeState?.totalStrikes ?? 0,
+        ].join(","),
+      );
+    } else {
+      lines.push(
+        [
+          candidate.candidateId,
+          `"${candidate.displayName}"`,
+          "N/A",
+          "N/A",
+          "N/A",
+          "Not Submitted",
+          strikeState?.totalStrikes ?? 0,
+        ].join(","),
+      );
+    }
+  }
+
+  return lines.join("\n");
 }

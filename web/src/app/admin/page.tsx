@@ -1,17 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { signIn, signOut, useSession } from "next-auth/react";
 
-type AdminProfile = {
-  id: string;
-  email: string;
-  displayName: string;
-  role: "SUPER_ADMIN" | "PROCTOR";
-  expiresAt: string;
-};
+interface ExamSummary {
+  examId: string;
+  accessCode: string;
+  title: string;
+  startsAt: string;
+  endsAt: string;
+  candidateCount: number;
+  questionCount: number;
+  createdAt: string;
+}
 
-type MonitoringData = {
+interface MonitoringData {
   examId: string;
   title: string;
   activeCount: number;
@@ -25,871 +29,645 @@ type MonitoringData = {
     status: "Active" | "Disconnected" | "Flagged" | "Submitted";
     strikes: number;
     lastEventType: string | null;
-    lastEventAt: string | null;
     submittedAt: string | null;
-    expiresAt: string;
-    extendedUntil: string | null;
   }>;
-};
+}
 
-type TimelineEntry = {
-  id: string;
-  kind: "event" | "admin_action";
-  createdAt: string;
-  label: string;
-  detail: string;
-  strikeDelta?: number;
-  strikeTotalAfter?: number;
-  actor?: string;
-};
+type ApiResult<T> = { ok: true; data: T } | { ok: false; error: { message: string } };
 
-type TimelineData = {
-  examId: string;
-  sessionId: string;
-  candidateId: string;
-  candidateName: string;
-  entries: TimelineEntry[];
-};
+type View = "auth" | "signup" | "dashboard" | "create" | "monitoring";
 
-type ExamSummary = {
-  examId: string;
-  accessCode: string;
-  title: string;
-  startsAt: string;
-  endsAt: string;
-  sessionPolicy: "BlockNew" | "KickOld";
-  warningThreshold: number;
-  temporaryLockThreshold: number;
-  autoSubmitThreshold: number;
-  candidateCount: number;
-  questionCount: number;
-  createdAt: string;
-};
+export default function LecturerPage() {
+  const { data: session, status } = useSession();
+  const [view, setView] = useState<View>("auth");
+  const [exams, setExams] = useState<ExamSummary[]>([]);
+  const [monitoring, setMonitoring] = useState<MonitoringData | null>(null);
+  const [selectedExamId, setSelectedExamId] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-type SimilaritySnapshot = {
-  run: {
-    runId: string;
-    examId: string;
-    initiatedBy: string;
-    answerWeight: number;
-    timingWeight: number;
-    scoreThreshold: number;
-    minCommonAnswers: number;
-    generatedPairs: number;
-    createdAt: string;
-  } | null;
-  pairs: Array<{
-    id: string;
-    leftCandidateId: string;
-    rightCandidateId: string;
-    leftCandidateName: string;
-    rightCandidateName: string;
-    commonAnswered: number;
-    matchingAnswers: number;
-    answerSimilarity: number;
-    timingSimilarity: number;
-    combinedScore: number;
-    flagged: boolean;
-  }>;
-};
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authName, setAuthName] = useState("");
 
-type AnalyticsSnapshot = {
-  examId: string;
-  generatedAt: string;
-  totals: {
-    registeredCandidates: number;
-    submittedCandidates: number;
-    flaggedCandidates: number;
-    activeSessions: number;
-  };
-  rates: {
-    submissionSuccessRate: number;
-    flaggedRate: number;
-  };
-  integrity: {
-    strikeEvents: number;
-    abuseAttemptEvents: number;
-    averageStrikesPerCandidate: number;
-  };
-  reliability: {
-    autosaveCadenceP95Seconds: number | null;
-  };
-};
+  const [examTitle, setExamTitle] = useState("");
+  const [examCode, setExamCode] = useState("");
+  const [examStartsAt, setExamStartsAt] = useState("");
+  const [examEndsAt, setExamEndsAt] = useState("");
+  const [rosterCsv, setRosterCsv] = useState("");
+  const [rosterExamId, setRosterExamId] = useState("");
+  const [rosterResult, setRosterResult] = useState("");
 
-type ApiFailure = { ok: false; error: { message: string } };
-type ApiSuccess<T> = { ok: true; data: T };
+  const [questions, setQuestions] = useState<Array<{
+    prompt: string;
+    options: string[];
+    correctOption: string;
+  }>>([]);
 
-export default function AdminPage() {
-  const [email, setEmail] = useState("admin@testkoko.local");
-  const [password, setPassword] = useState("admin12345");
-  const [profile, setProfile] = useState<AdminProfile | null>(null);
-
-  const [examId, setExamId] = useState("exam-mth101");
-  const [snapshot, setSnapshot] = useState<MonitoringData | null>(null);
-  const [timeline, setTimeline] = useState<TimelineData | null>(null);
-  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-
-  const [error, setError] = useState<string | null>(null);
-  const [note, setNote] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isSigningIn, setIsSigningIn] = useState(false);
-  const [streamOn, setStreamOn] = useState(true);
-
-  const [examCatalog, setExamCatalog] = useState<ExamSummary[]>([]);
-  const [isCatalogLoading, setIsCatalogLoading] = useState(false);
-  const [isCreatingExam, setIsCreatingExam] = useState(false);
-  const [isUploadingRoster, setIsUploadingRoster] = useState(false);
-  const [isRunningSimilarity, setIsRunningSimilarity] = useState(false);
-  const [isRefreshingInsights, setIsRefreshingInsights] = useState(false);
-
-  const [examAccessCode, setExamAccessCode] = useState("NEW-EXAM-001");
-  const [examTitle, setExamTitleInput] = useState("New Institutional Exam");
-  const [examStartAt, setExamStartAt] = useState(() => {
-    const when = new Date(Date.now() + 24 * 60 * 60 * 1000);
-    return when.toISOString().slice(0, 16);
-  });
-  const [examEndAt, setExamEndAt] = useState(() => {
-    const when = new Date(Date.now() + 26 * 60 * 60 * 1000);
-    return when.toISOString().slice(0, 16);
-  });
-
-  const [rosterExamId, setRosterExamId] = useState("exam-mth101");
-  const [rosterCsv, setRosterCsv] = useState(
-    ["candidateId,surname,displayName", "MAT-00991,Okeke,Okeke L.", "MAT-00992,Audu,Audu K."].join("\n"),
-  );
-
-  const [similarity, setSimilarity] = useState<SimilaritySnapshot | null>(null);
-  const [analytics, setAnalytics] = useState<AnalyticsSnapshot | null>(null);
-
-  const sourceRef = useRef<EventSource | null>(null);
-
-  const statusPalette = useMemo(
-    () => ({
-      Active: "border-neutral-300 bg-white text-black",
-      Disconnected: "border-neutral-300 bg-neutral-100 text-neutral-700",
-      Flagged: "border-black bg-black text-white",
-      Submitted: "border-neutral-400 bg-neutral-200 text-neutral-800",
-    }),
-    [],
-  );
-
-  const fetchMe = useCallback(async () => {
-    const response = await fetch("/api/admin/auth/me");
-    const data = (await response.json()) as ApiSuccess<AdminProfile> | ApiFailure;
-    if (!response.ok || !data.ok) {
-      setProfile(null);
-      return;
-    }
-
-    setProfile(data.data);
+  const loadExams = useCallback(async () => {
+    try {
+      const res = await fetch("/api/lecturer/exams");
+      const json: ApiResult<{ exams: ExamSummary[] }> = await res.json();
+      if (json.ok) setExams(json.data.exams);
+    } catch { /* silent */ }
   }, []);
 
   useEffect(() => {
-    const handle = setTimeout(() => {
-      void fetchMe();
-    }, 0);
-
-    return () => clearTimeout(handle);
-  }, [fetchMe]);
-
-  const loadSnapshot = useCallback(async () => {
-    if (!examId.trim()) {
-      setError("Exam ID is required.");
-      return;
-    }
-
-    setIsLoading(true);
-    setError(null);
-
-    const response = await fetch(`/api/admin/monitoring?examId=${encodeURIComponent(examId.trim())}`);
-    const data = (await response.json()) as ApiSuccess<MonitoringData> | ApiFailure;
-    if (!response.ok || !data.ok) {
-      setError(data.ok ? "Monitoring fetch failed." : data.error.message);
-      setIsLoading(false);
-      return;
-    }
-
-    setSnapshot(data.data);
-    setSelectedSessionId((current) => current ?? data.data.candidates[0]?.sessionId ?? null);
-    setIsLoading(false);
-  }, [examId]);
-
-  const loadTimeline = useCallback(async () => {
-    if (!examId.trim() || !selectedSessionId) {
-      setTimeline(null);
-      return;
-    }
-
-    const response = await fetch(
-      `/api/admin/timeline?examId=${encodeURIComponent(examId.trim())}&sessionId=${encodeURIComponent(selectedSessionId)}`,
-    );
-    const data = (await response.json()) as ApiSuccess<TimelineData> | ApiFailure;
-    if (!response.ok || !data.ok) {
-      setTimeline(null);
-      return;
-    }
-
-    setTimeline(data.data);
-  }, [examId, selectedSessionId]);
-
-  const loadExamCatalog = useCallback(async () => {
-    if (!profile) {
-      return;
-    }
-
-    setIsCatalogLoading(true);
-    const response = await fetch("/api/admin/exams");
-    const data = (await response.json()) as ApiSuccess<{ exams: ExamSummary[] }> | ApiFailure;
-    if (!response.ok || !data.ok) {
-      setIsCatalogLoading(false);
-      return;
-    }
-
-    setExamCatalog(data.data.exams);
-    setIsCatalogLoading(false);
-  }, [profile]);
-
-  const loadInsights = useCallback(async () => {
-    const targetExamId = examId.trim();
-    if (!profile || !targetExamId) {
-      return;
-    }
-
-    setIsRefreshingInsights(true);
-
-    const [similarityResponse, analyticsResponse] = await Promise.all([
-      fetch(`/api/admin/similarity?examId=${encodeURIComponent(targetExamId)}`),
-      fetch(`/api/admin/analytics?examId=${encodeURIComponent(targetExamId)}`),
-    ]);
-
-    const similarityData = (await similarityResponse.json()) as ApiSuccess<SimilaritySnapshot> | ApiFailure;
-    if (similarityResponse.ok && similarityData.ok) {
-      setSimilarity(similarityData.data);
-    }
-
-    const analyticsData = (await analyticsResponse.json()) as ApiSuccess<AnalyticsSnapshot> | ApiFailure;
-    if (analyticsResponse.ok && analyticsData.ok) {
-      setAnalytics(analyticsData.data);
-    }
-
-    setIsRefreshingInsights(false);
-  }, [examId, profile]);
+    if (status === "authenticated") { setView("dashboard"); loadExams(); }
+    else if (status === "unauthenticated") { setView("auth"); }
+  }, [status, loadExams]);
 
   useEffect(() => {
-    const handle = setTimeout(() => {
-      void loadTimeline();
-    }, 0);
+    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+  }, []);
 
-    return () => clearTimeout(handle);
-  }, [loadTimeline]);
+  async function handleSignIn(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    const result = await signIn("credentials", { email: authEmail, password: authPassword, redirect: false });
+    setLoading(false);
+    if (result?.error) setError("Invalid email or password.");
+  }
 
-  useEffect(() => {
-    const handle = setTimeout(() => {
-      void loadExamCatalog();
-    }, 0);
+  async function handleSignUp(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/lecturer/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: authName, email: authEmail, password: authPassword }),
+      });
+      const json = await res.json();
+      if (!json.ok) { setError(json.error?.message || "Signup failed."); setLoading(false); return; }
+      const result = await signIn("credentials", { email: authEmail, password: authPassword, redirect: false });
+      setLoading(false);
+      if (result?.error) { setError("Account created but sign-in failed. Try signing in manually."); setView("auth"); }
+    } catch { setError("Network error."); setLoading(false); }
+  }
 
-    return () => clearTimeout(handle);
-  }, [loadExamCatalog]);
+  async function handleCreateExam(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch("/api/lecturer/exams", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: examTitle,
+          accessCode: examCode,
+          startsAt: new Date(examStartsAt).toISOString(),
+          endsAt: new Date(examEndsAt).toISOString(),
+          questions,
+        }),
+      });
+      const json = await res.json();
+      setLoading(false);
+      if (!json.ok) { setError(json.error?.message || "Failed to create exam."); return; }
+      setExamTitle(""); setExamCode(""); setExamStartsAt(""); setExamEndsAt(""); setQuestions([]);
+      await loadExams();
+      setView("dashboard");
+    } catch { setError("Network error."); setLoading(false); }
+  }
 
-  useEffect(() => {
-    const handle = setTimeout(() => {
-      void loadInsights();
-    }, 0);
+  async function handleUploadRoster(e: React.FormEvent) {
+    e.preventDefault();
+    setError("");
+    setRosterResult("");
+    if (!rosterExamId || !rosterCsv.trim()) { setError("Select an exam and paste CSV data."); return; }
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/lecturer/exams/${rosterExamId}/roster`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ csv: rosterCsv }),
+      });
+      const json = await res.json();
+      setLoading(false);
+      if (!json.ok) { setError(json.error?.message || "Upload failed."); return; }
+      setRosterResult(`Created: ${json.data.createdCount}, Updated: ${json.data.updatedCount}, Total: ${json.data.totalProcessed}`);
+      setRosterCsv("");
+      await loadExams();
+    } catch { setError("Network error."); setLoading(false); }
+  }
 
-    return () => clearTimeout(handle);
-  }, [loadInsights]);
+  function openMonitoring(examId: string) {
+    setSelectedExamId(examId);
+    setView("monitoring");
+    fetchMonitoring(examId);
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = setInterval(() => fetchMonitoring(examId), 5000);
+  }
 
-  useEffect(() => {
-    if (!profile || !streamOn || !examId.trim()) {
-      sourceRef.current?.close();
-      sourceRef.current = null;
-      return;
-    }
+  async function fetchMonitoring(examId: string) {
+    try {
+      const res = await fetch(`/api/lecturer/exams/${examId}/monitoring`);
+      const json: ApiResult<MonitoringData> = await res.json();
+      if (json.ok) setMonitoring(json.data);
+    } catch { /* silent */ }
+  }
 
-    const source = new EventSource(`/api/admin/monitoring/stream?examId=${encodeURIComponent(examId.trim())}`);
-    sourceRef.current = source;
-
-    const onSnapshot = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data) as MonitoringData;
-        setSnapshot(data);
-        setSelectedSessionId((current) => current ?? data.candidates[0]?.sessionId ?? null);
-        setError(null);
-      } catch {
-        setError("Could not parse stream payload.");
-      }
-    };
-
-    const onError = () => {
-      setError("Realtime stream disconnected. You can still refresh manually.");
-      source.close();
-      sourceRef.current = null;
-    };
-
-    source.addEventListener("snapshot", onSnapshot as EventListener);
-    source.addEventListener("error", onError as EventListener);
-
-    return () => {
-      source.removeEventListener("snapshot", onSnapshot as EventListener);
-      source.removeEventListener("error", onError as EventListener);
-      source.close();
-      sourceRef.current = null;
-    };
-  }, [examId, profile, streamOn]);
-
-  const signIn = async (event: React.FormEvent) => {
-    event.preventDefault();
-    setError(null);
-    setNote(null);
-    setIsSigningIn(true);
-
-    const response = await fetch("/api/admin/auth/login", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ email, password }),
-    });
-
-    const data = (await response.json()) as ApiSuccess<AdminProfile> | ApiFailure;
-    if (!response.ok || !data.ok) {
-      setError(data.ok ? "Login failed." : data.error.message);
-      setIsSigningIn(false);
-      return;
-    }
-
-    setProfile(data.data);
-    setIsSigningIn(false);
-    setNote("Signed in. Monitoring stream is active.");
-    await loadSnapshot();
-  };
-
-  const signOut = async () => {
-    await fetch("/api/admin/auth/logout", { method: "POST" });
-    setProfile(null);
-    setSnapshot(null);
-    setTimeline(null);
-    setSelectedSessionId(null);
-    setExamCatalog([]);
-    setSimilarity(null);
-    setAnalytics(null);
-    setNote("Signed out.");
-  };
-
-  const runAction = async (
-    sessionId: string,
-    actionType: "force_submit" | "extend_time" | "reset_session",
-    extraMinutes?: number,
-  ) => {
-    setNote(null);
-    setError(null);
-
-    const response = await fetch("/api/admin/actions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        examId: examId.trim(),
-        sessionId,
-        actionType,
-        extraMinutes,
-      }),
-    });
-
-    const data = (await response.json()) as ApiSuccess<{ message: string }> | ApiFailure;
-    if (!response.ok || !data.ok) {
-      setError(data.ok ? "Admin action failed." : data.error.message);
-      return;
-    }
-
-    setNote(data.data.message);
-    await loadSnapshot();
-    await loadTimeline();
-  };
-
-  const createExam = async () => {
-    setError(null);
-    setNote(null);
-    setIsCreatingExam(true);
-
-    const response = await fetch("/api/admin/exams", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        accessCode: examAccessCode,
-        title: examTitle,
-        startsAt: new Date(examStartAt).toISOString(),
-        endsAt: new Date(examEndAt).toISOString(),
-      }),
-    });
-
-    const data = (await response.json()) as ApiSuccess<{ exam: ExamSummary }> | ApiFailure;
-    if (!response.ok || !data.ok) {
-      setError(data.ok ? "Exam creation failed." : data.error.message);
-      setIsCreatingExam(false);
-      return;
-    }
-
-    setNote(`Exam created: ${data.data.exam.title} (${data.data.exam.accessCode}).`);
-    setExamId(data.data.exam.examId);
-    setRosterExamId(data.data.exam.examId);
-    await loadExamCatalog();
-    setIsCreatingExam(false);
-  };
-
-  const uploadRoster = async () => {
-    const targetExamId = rosterExamId.trim();
-    if (!targetExamId) {
-      setError("Roster exam ID is required.");
-      return;
-    }
-
-    setError(null);
-    setNote(null);
-    setIsUploadingRoster(true);
-
-    const response = await fetch(`/api/admin/exams/${encodeURIComponent(targetExamId)}/roster`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ csv: rosterCsv }),
-    });
-
-    const data = (await response.json()) as
-      | ApiSuccess<{
-          examId: string;
-          createdCount: number;
-          updatedCount: number;
-          skippedCount: number;
-          totalProcessed: number;
-          issues: Array<{ row: number; message: string }>;
-        }>
-      | ApiFailure;
-
-    if (!response.ok || !data.ok) {
-      setError(data.ok ? "Roster upload failed." : data.error.message);
-      setIsUploadingRoster(false);
-      return;
-    }
-
-    const issueNote = data.data.issues.length > 0 ? ` (${data.data.issues.length} row issue(s))` : "";
-    setNote(
-      `Roster uploaded. created=${data.data.createdCount}, updated=${data.data.updatedCount}, skipped=${data.data.skippedCount}${issueNote}.`,
-    );
-
-    await loadExamCatalog();
-    await loadSnapshot();
-    setIsUploadingRoster(false);
-  };
-
-  const runSimilarity = async () => {
-    const targetExamId = examId.trim();
-    if (!targetExamId) {
-      setError("Exam ID is required.");
-      return;
-    }
-
-    setError(null);
-    setNote(null);
-    setIsRunningSimilarity(true);
-
-    const response = await fetch("/api/admin/similarity/run", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        examId: targetExamId,
-        scoreThreshold: 0.75,
-        minCommonAnswers: 3,
-      }),
-    });
-
-    const data = (await response.json()) as ApiSuccess<{ runId: string; generatedPairs: number }> | ApiFailure;
-
-    if (!response.ok || !data.ok) {
-      setError(data.ok ? "Similarity run failed." : data.error.message);
-      setIsRunningSimilarity(false);
-      return;
-    }
-
-    setNote(`Similarity run complete. ${data.data.generatedPairs} flagged pair(s).`);
-    await loadInsights();
-    setIsRunningSimilarity(false);
-  };
-
-  const downloadAudit = async () => {
-    const targetExamId = examId.trim();
-    if (!targetExamId) {
-      setError("Exam ID is required.");
-      return;
-    }
-
-    setError(null);
-    setNote(null);
-
-    const response = await fetch(`/api/admin/reports/audit?examId=${encodeURIComponent(targetExamId)}`);
-    const data = (await response.json()) as ApiSuccess<unknown> | ApiFailure;
-    if (!response.ok || !data.ok) {
-      setError(data.ok ? "Audit export failed." : data.error.message);
-      return;
-    }
-
-    const content = JSON.stringify(data.data, null, 2);
-    const blob = new Blob([content], { type: "application/json" });
+  async function downloadResults(examId: string) {
+    const res = await fetch(`/api/lecturer/exams/${examId}/results`);
+    if (!res.ok) return;
+    const blob = await res.blob();
     const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `audit-${targetExamId}.json`;
-    anchor.click();
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `results-${examId}.csv`;
+    a.click();
     URL.revokeObjectURL(url);
-    setNote(`Audit report downloaded for ${targetExamId}.`);
-  };
+  }
 
-  return (
-    <div className="min-h-screen bg-neutral-50 py-6 md:py-10">
-      <main className="ui-shell max-w-7xl space-y-6">
-        <div className="flex items-center justify-between text-sm text-neutral-600">
-          <Link href="/" className="hover:text-black">
-            Back to home
-          </Link>
-          <span className="ui-kicker">Admin Console</span>
-        </div>
+  function addQuestion() {
+    setQuestions([...questions, { prompt: "", options: ["", "", "", ""], correctOption: "" }]);
+  }
 
-        <section className="ui-card overflow-hidden">
-          <div className="border-b border-neutral-200 px-5 py-4 md:px-7">
-            <p className="ui-kicker">Monitoring and intervention</p>
-            <h1 className="font-heading mt-1 text-2xl font-semibold md:text-3xl">Live Exam Operations</h1>
-            <p className="mt-1 text-sm text-neutral-600">Clear status, direct interventions, and evidence timelines.</p>
+  function updateQuestion(index: number, field: string, value: string) {
+    const updated = [...questions];
+    if (field === "prompt") updated[index].prompt = value;
+    else if (field === "correctOption") updated[index].correctOption = value;
+    setQuestions(updated);
+  }
+
+  function updateOption(qIndex: number, oIndex: number, value: string) {
+    const updated = [...questions];
+    updated[qIndex].options[oIndex] = value;
+    setQuestions(updated);
+  }
+
+  function removeQuestion(index: number) {
+    setQuestions(questions.filter((_, i) => i !== index));
+  }
+
+  // Loading
+  if (status === "loading") {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[var(--bg)]">
+        <p className="font-mono text-sm text-[var(--text-soft)]">Loading...</p>
+      </div>
+    );
+  }
+
+  // ── Auth / Signup ──
+  if (view === "auth" || view === "signup") {
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-[var(--bg)] p-6">
+        <div className="w-full max-w-sm animate-in">
+          <div className="mb-10 text-center">
+            <div className="mx-auto flex h-10 w-10 items-center justify-center bg-[var(--black)] font-mono text-[10px] font-bold text-[var(--accent)]">
+              TK
+            </div>
+            <h1 className="font-display mt-5 text-2xl font-bold tracking-tight">
+              {view === "signup" ? "Create Account" : "Lecturer Sign In"}
+            </h1>
+            <p className="mt-2 text-sm text-[var(--text-muted)]">
+              {view === "signup" ? "Sign up to create and manage exams." : "Sign in to manage your exams."}
+            </p>
           </div>
 
-          {!profile ? (
-            <form className="grid gap-4 p-5 md:grid-cols-2 md:p-7" onSubmit={signIn}>
-              <label>
-                <span className="ui-label">Admin Email</span>
-                <input className="ui-input" value={email} onChange={(event) => setEmail(event.target.value)} required />
-              </label>
-
-              <label>
-                <span className="ui-label">Password</span>
-                <input
-                  className="ui-input"
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  required
-                />
-              </label>
-
-              <button className="ui-btn-primary md:col-span-2" disabled={isSigningIn} type="submit">
-                {isSigningIn ? "Signing in..." : "Sign In"}
-              </button>
-            </form>
-          ) : (
-            <div className="space-y-5 p-5 md:p-7">
-              <div className="ui-muted-card flex flex-wrap items-center justify-between gap-3 p-3">
-                <div>
-                  <p className="font-heading font-semibold">{profile.displayName}</p>
-                  <p className="text-xs text-neutral-600">
-                    {profile.role} | session expires {new Date(profile.expiresAt).toLocaleTimeString()}
-                  </p>
-                </div>
-                <button className="ui-btn-secondary" onClick={() => void signOut()} type="button">
-                  Logout
-                </button>
-              </div>
-
-              <div className="grid gap-3 md:grid-cols-[1fr_auto_auto]">
-                <input
-                  className="ui-input"
-                  placeholder="Exam ID"
-                  value={examId}
-                  onChange={(event) => setExamId(event.target.value)}
-                />
-                <button className="ui-btn-secondary" type="button" onClick={() => void loadSnapshot()}>
-                  {isLoading ? "Refreshing..." : "Refresh"}
-                </button>
-                <button className={streamOn ? "ui-btn-primary" : "ui-btn-secondary"} type="button" onClick={() => setStreamOn((current) => !current)}>
-                  {streamOn ? "Realtime On" : "Realtime Off"}
-                </button>
-              </div>
-
-              {snapshot ? (
-                <>
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <StatCard label="Active" value={snapshot.activeCount} tone="light" />
-                    <StatCard label="Disconnected" value={snapshot.disconnectedCount} tone="muted" />
-                    <StatCard label="Flagged" value={snapshot.flaggedCount} tone="dark" />
-                    <StatCard label="Submitted" value={snapshot.submittedCount} tone="muted" />
-                  </div>
-
-                  <div className="grid gap-5 lg:grid-cols-[1.65fr_1fr]">
-                    <div className="overflow-hidden rounded-2xl border border-neutral-200 bg-white">
-                      <div className="overflow-x-auto">
-                        <table className="ui-table min-w-[820px] text-sm">
-                          <thead>
-                            <tr>
-                              <th>Candidate</th>
-                              <th>Status</th>
-                              <th>Strikes</th>
-                              <th>Last Event</th>
-                              <th>Actions</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {snapshot.candidates.map((row) => (
-                              <tr className={selectedSessionId === row.sessionId ? "bg-neutral-100" : undefined} key={row.sessionId}>
-                                <td>
-                                  <button className="text-left" onClick={() => setSelectedSessionId(row.sessionId)} type="button">
-                                    <p className="font-heading text-sm font-semibold">{row.candidateName}</p>
-                                    <p className="text-xs text-neutral-600">{row.candidateId}</p>
-                                  </button>
-                                </td>
-                                <td>
-                                  <span className={`ui-badge ${statusPalette[row.status]}`}>{row.status}</span>
-                                </td>
-                                <td className="text-xs">{row.strikes}</td>
-                                <td className="text-xs text-neutral-700">
-                                  {row.lastEventType
-                                    ? `${row.lastEventType} @ ${new Date(row.lastEventAt || "").toLocaleTimeString()}`
-                                    : "No events"}
-                                </td>
-                                <td>
-                                  <div className="flex flex-wrap gap-2">
-                                    <button className="ui-btn-secondary !px-2 !py-1 !text-xs" onClick={() => void runAction(row.sessionId, "force_submit")} type="button">
-                                      Force Submit
-                                    </button>
-                                    <button className="ui-btn-secondary !px-2 !py-1 !text-xs" onClick={() => void runAction(row.sessionId, "extend_time", 10)} type="button">
-                                      +10 min
-                                    </button>
-                                    {profile.role === "SUPER_ADMIN" ? (
-                                      <button className="ui-btn-secondary !px-2 !py-1 !text-xs" onClick={() => void runAction(row.sessionId, "reset_session")} type="button">
-                                        Reset
-                                      </button>
-                                    ) : null}
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-
-                    <section className="ui-muted-card p-4">
-                      <p className="ui-kicker">Candidate Timeline</p>
-                      {timeline ? (
-                        <>
-                          <h3 className="font-heading mt-2 text-lg font-semibold">{timeline.candidateName}</h3>
-                          <p className="text-xs text-neutral-600">{timeline.candidateId}</p>
-                          <ul className="mt-3 max-h-[420px] space-y-2 overflow-auto pr-1">
-                            {timeline.entries.map((entry) => (
-                              <li className="rounded-xl border border-neutral-200 bg-white p-3" key={entry.id}>
-                                <div className="flex items-center justify-between gap-2">
-                                  <p className="text-xs font-semibold uppercase tracking-[0.08em]">{entry.label}</p>
-                                  <p className="text-[11px] text-neutral-600">{new Date(entry.createdAt).toLocaleTimeString()}</p>
-                                </div>
-                                <p className="mt-1 text-xs text-neutral-700">{entry.detail}</p>
-                                {entry.strikeDelta !== undefined ? (
-                                  <p className="mt-1 text-[11px] text-neutral-700">
-                                    strike +{entry.strikeDelta} to {entry.strikeTotalAfter}
-                                  </p>
-                                ) : null}
-                                {entry.actor ? <p className="mt-1 text-[11px] text-neutral-700">actor: {entry.actor}</p> : null}
-                              </li>
-                            ))}
-                          </ul>
-                        </>
-                      ) : (
-                        <p className="mt-3 text-sm text-neutral-600">Select a candidate row to load timeline events.</p>
-                      )}
-                    </section>
-                  </div>
-                </>
-              ) : (
-                <p className="text-sm text-neutral-600">No snapshot yet. Click refresh or wait for stream.</p>
-              )}
+          {error && (
+            <div className="mb-5 border-l-3 border-[var(--danger)] bg-red-50 px-4 py-3 text-sm text-[var(--danger)]">
+              {error}
             </div>
           )}
 
-          {note ? <p className="px-5 pb-4 text-sm text-neutral-700 md:px-7">{note}</p> : null}
-          {error ? <p className="px-5 pb-4 text-sm text-black md:px-7">{error}</p> : null}
-        </section>
+          <form onSubmit={view === "signup" ? handleSignUp : handleSignIn} className="space-y-4">
+            {view === "signup" && (
+              <div>
+                <label className="ui-label">Full Name</label>
+                <input
+                  type="text"
+                  value={authName}
+                  onChange={(e) => setAuthName(e.target.value)}
+                  className="ui-input"
+                  required
+                />
+              </div>
+            )}
+            <div>
+              <label className="ui-label">Email</label>
+              <input
+                type="email"
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
+                className="ui-input"
+                required
+              />
+            </div>
+            <div>
+              <label className="ui-label">Password</label>
+              <input
+                type="password"
+                value={authPassword}
+                onChange={(e) => setAuthPassword(e.target.value)}
+                className="ui-input"
+                required
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-[var(--black)] py-3 text-[13px] font-bold uppercase tracking-wide text-[var(--accent)] hover:bg-[#1a1a1a] disabled:opacity-40 transition-colors"
+            >
+              {loading ? "Loading..." : view === "signup" ? "Create Account" : "Sign In"}
+            </button>
+          </form>
 
-        {profile ? (
-          <section className="ui-card overflow-hidden">
-            <div className="border-b border-neutral-200 px-5 py-4 md:px-7">
-              <p className="ui-kicker">Admin setup and insights</p>
-              <h2 className="font-heading mt-1 text-2xl font-semibold md:text-3xl">Onboarding, Similarity, and Audit</h2>
+          <p className="mt-6 text-center text-sm text-[var(--text-muted)]">
+            {view === "signup" ? (
+              <>Already have an account?{" "}<button onClick={() => { setView("auth"); setError(""); }} className="font-semibold text-[var(--text)] underline underline-offset-2">Sign in</button></>
+            ) : (
+              <>Don&apos;t have an account?{" "}<button onClick={() => { setView("signup"); setError(""); }} className="font-semibold text-[var(--text)] underline underline-offset-2">Sign up</button></>
+            )}
+          </p>
+
+          <div className="mt-4 text-center">
+            <Link href="/" className="font-mono text-xs text-[var(--text-soft)] hover:text-[var(--text)] transition-colors">
+              ← Back to home
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Dashboard ──
+  if (view === "dashboard") {
+    return (
+      <div className="min-h-screen bg-[var(--bg)]">
+        <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[var(--bg)]/95 backdrop-blur-sm">
+          <div className="ui-shell flex h-14 items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="flex h-7 w-7 items-center justify-center bg-[var(--black)] font-mono text-[8px] font-bold text-[var(--accent)]">TK</div>
+              <span className="font-display text-sm font-bold tracking-tight">Dashboard</span>
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="font-mono text-xs text-[var(--text-soft)]">{session?.user?.name}</span>
+              <button
+                onClick={() => signOut({ callbackUrl: "/admin" })}
+                className="border border-[var(--border)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
+              >
+                Sign Out
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <main className="ui-shell py-8">
+          {error && (
+            <div className="mb-6 border-l-3 border-[var(--danger)] bg-red-50 px-4 py-3 text-sm text-[var(--danger)]">
+              {error}
+            </div>
+          )}
+
+          <div className="mb-8 flex flex-wrap items-center justify-between gap-4 animate-in">
+            <h1 className="font-display text-2xl font-bold tracking-tight">Your Exams</h1>
+            <button
+              onClick={() => { setView("create"); setError(""); }}
+              className="bg-[var(--black)] px-5 py-2.5 text-[13px] font-bold uppercase tracking-wide text-[var(--accent)] hover:bg-[#1a1a1a] transition-colors"
+            >
+              + Create Exam
+            </button>
+          </div>
+
+          {/* Roster upload */}
+          <details className="mb-8 border border-[var(--border)] bg-[var(--surface)] animate-in delay-1">
+            <summary className="cursor-pointer px-5 py-3 font-mono text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
+              Upload Student Roster (CSV)
+            </summary>
+            <form onSubmit={handleUploadRoster} className="space-y-3 border-t border-[var(--border)] p-5">
+              <div>
+                <label className="ui-label">Select Exam</label>
+                <select
+                  value={rosterExamId}
+                  onChange={(e) => setRosterExamId(e.target.value)}
+                  className="ui-input"
+                >
+                  <option value="">-- Select --</option>
+                  {exams.map((ex) => (
+                    <option key={ex.examId} value={ex.examId}>
+                      {ex.title} ({ex.accessCode})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="ui-label">CSV Data</label>
+                <textarea
+                  value={rosterCsv}
+                  onChange={(e) => setRosterCsv(e.target.value)}
+                  rows={4}
+                  placeholder={"candidateId,surname,displayName\nCSC/2020/001,Doe,John Doe"}
+                  className="ui-input font-mono !h-auto p-3 text-xs"
+                  style={{ minHeight: "100px" }}
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={loading}
+                className="bg-[var(--black)] px-5 py-2 text-[12px] font-bold uppercase tracking-wider text-[var(--accent)] hover:bg-[#1a1a1a] disabled:opacity-40 transition-colors"
+              >
+                {loading ? "Uploading..." : "Upload Roster"}
+              </button>
+              {rosterResult && (
+                <p className="font-mono text-xs text-[var(--success)]">{rosterResult}</p>
+              )}
+            </form>
+          </details>
+
+          {/* Exam list */}
+          {exams.length === 0 ? (
+            <div className="border border-dashed border-[var(--border)] p-12 text-center animate-in delay-2">
+              <p className="font-mono text-xs text-[var(--text-soft)]">No exams yet. Create your first exam to get started.</p>
+            </div>
+          ) : (
+            <div className="space-y-2 animate-in delay-2">
+              {exams.map((exam) => {
+                const now = Date.now();
+                const isActive = now >= new Date(exam.startsAt).getTime() && now <= new Date(exam.endsAt).getTime();
+                const isEnded = now > new Date(exam.endsAt).getTime();
+
+                return (
+                  <div
+                    key={exam.examId}
+                    className="flex flex-col gap-3 border border-[var(--border)] bg-[var(--surface)] p-4 sm:flex-row sm:items-center sm:justify-between"
+                  >
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="font-display text-sm font-bold">{exam.title}</h3>
+                        {isActive && (
+                          <span className="bg-[var(--accent)] px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-[var(--black)]">
+                            Live
+                          </span>
+                        )}
+                        {isEnded && (
+                          <span className="bg-[var(--bg-deep)] px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-[var(--text-soft)]">
+                            Ended
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 font-mono text-[11px] text-[var(--text-soft)]">
+                        Code: <span className="font-semibold text-[var(--text)]">{exam.accessCode}</span>
+                        {" · "}{exam.candidateCount} students{" · "}{exam.questionCount} questions
+                      </p>
+                      <p className="mt-0.5 font-mono text-[10px] text-[var(--text-soft)]">
+                        {new Date(exam.startsAt).toLocaleString()} — {new Date(exam.endsAt).toLocaleString()}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      <button
+                        onClick={() => {
+                          const url = `${window.location.origin}/candidate`;
+                          const text = `Exam: ${exam.title}\nAccess Code: ${exam.accessCode}\nLink: ${url}\n\nUse the access code above to sign in.`;
+                          navigator.clipboard.writeText(text).then(() => {
+                            alert("Exam details copied to clipboard!");
+                          });
+                        }}
+                        className="border border-[var(--border)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
+                      >
+                        Share
+                      </button>
+                      <button
+                        onClick={() => openMonitoring(exam.examId)}
+                        className="border border-[var(--border)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
+                      >
+                        Monitor
+                      </button>
+                      <button
+                        onClick={() => downloadResults(exam.examId)}
+                        className="border border-[var(--border)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
+                      >
+                        Export
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </main>
+      </div>
+    );
+  }
+
+  // ── Create Exam ──
+  if (view === "create") {
+    return (
+      <div className="min-h-screen bg-[var(--bg)]">
+        <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[var(--bg)]/95 backdrop-blur-sm">
+          <div className="ui-shell flex h-14 items-center gap-3">
+            <button
+              onClick={() => { setView("dashboard"); setError(""); }}
+              className="font-mono text-xs text-[var(--text-soft)] hover:text-[var(--text)] transition-colors"
+            >
+              ← Back
+            </button>
+            <span className="font-display text-sm font-bold tracking-tight">Create Exam</span>
+          </div>
+        </header>
+
+        <main className="ui-shell max-w-2xl py-8">
+          {error && (
+            <div className="mb-6 border-l-3 border-[var(--danger)] bg-red-50 px-4 py-3 text-sm text-[var(--danger)]">{error}</div>
+          )}
+
+          <form onSubmit={handleCreateExam} className="space-y-5 animate-in">
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="ui-label">Exam Title</label>
+                <input type="text" value={examTitle} onChange={(e) => setExamTitle(e.target.value)} className="ui-input" required />
+              </div>
+              <div>
+                <label className="ui-label">Access Code</label>
+                <input type="text" value={examCode} onChange={(e) => setExamCode(e.target.value)} placeholder="e.g. MTH101" className="ui-input font-mono" required />
+              </div>
             </div>
 
-            <div className="grid gap-5 p-5 md:grid-cols-2 md:p-7">
-              <article className="ui-muted-card p-4">
-                <p className="ui-kicker">Create Exam</p>
-                <div className="mt-3 grid gap-3">
-                  <input className="ui-input" placeholder="Access Code" value={examAccessCode} onChange={(event) => setExamAccessCode(event.target.value)} />
-                  <input className="ui-input" placeholder="Exam Title" value={examTitle} onChange={(event) => setExamTitleInput(event.target.value)} />
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    <input className="ui-input" type="datetime-local" value={examStartAt} onChange={(event) => setExamStartAt(event.target.value)} />
-                    <input className="ui-input" type="datetime-local" value={examEndAt} onChange={(event) => setExamEndAt(event.target.value)} />
-                  </div>
-                  <button className="ui-btn-primary" type="button" onClick={() => void createExam()} disabled={isCreatingExam}>
-                    {isCreatingExam ? "Creating..." : "Create Exam"}
-                  </button>
-                </div>
-              </article>
-
-              <article className="ui-muted-card p-4">
-                <p className="ui-kicker">Roster Upload (CSV)</p>
-                <div className="mt-3 grid gap-3">
-                  <input className="ui-input" placeholder="Exam ID" value={rosterExamId} onChange={(event) => setRosterExamId(event.target.value)} />
-                  <textarea className="ui-textarea" value={rosterCsv} onChange={(event) => setRosterCsv(event.target.value)} />
-                  <button className="ui-btn-primary" type="button" onClick={() => void uploadRoster()} disabled={isUploadingRoster}>
-                    {isUploadingRoster ? "Uploading..." : "Upload Roster"}
-                  </button>
-                </div>
-              </article>
-
-              <article className="md:col-span-2">
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <p className="ui-kicker">Exam Catalog</p>
-                  <button className="ui-btn-secondary" type="button" onClick={() => void loadExamCatalog()} disabled={isCatalogLoading}>
-                    {isCatalogLoading ? "Refreshing..." : "Refresh Catalog"}
-                  </button>
-                </div>
-                <div className="overflow-x-auto rounded-2xl border border-neutral-200 bg-white">
-                  <table className="ui-table min-w-[640px] text-xs">
-                    <thead>
-                      <tr>
-                        <th>Exam</th>
-                        <th>Access</th>
-                        <th>Candidates</th>
-                        <th>Questions</th>
-                        <th>Action</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {examCatalog.map((exam) => (
-                        <tr key={exam.examId}>
-                          <td>
-                            <p className="font-heading text-sm font-semibold">{exam.title}</p>
-                            <p className="text-[11px] text-neutral-600">{exam.examId}</p>
-                          </td>
-                          <td>{exam.accessCode}</td>
-                          <td>{exam.candidateCount}</td>
-                          <td>{exam.questionCount}</td>
-                          <td>
-                            <button
-                              className="ui-btn-secondary !px-2 !py-1 !text-xs"
-                              type="button"
-                              onClick={() => {
-                                setExamId(exam.examId);
-                                setRosterExamId(exam.examId);
-                              }}
-                            >
-                              Use
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </article>
-
-              <article className="md:col-span-2">
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <button className="ui-btn-primary" type="button" onClick={() => void runSimilarity()} disabled={isRunningSimilarity}>
-                    {isRunningSimilarity ? "Running Similarity..." : "Run Similarity"}
-                  </button>
-                  <button className="ui-btn-secondary" type="button" onClick={() => void loadInsights()} disabled={isRefreshingInsights}>
-                    {isRefreshingInsights ? "Refreshing Insights..." : "Refresh Insights"}
-                  </button>
-                  <button className="ui-btn-secondary" type="button" onClick={() => void downloadAudit()}>
-                    Export Audit JSON
-                  </button>
-                </div>
-
-                {analytics ? (
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                    <StatCard label="Registered" value={analytics.totals.registeredCandidates} tone="light" />
-                    <StatCard label="Submitted" value={analytics.totals.submittedCandidates} tone="muted" />
-                    <StatCard label="Flagged" value={analytics.totals.flaggedCandidates} tone="dark" />
-                    <StatCard label="Active" value={analytics.totals.activeSessions} tone="muted" />
-                  </div>
-                ) : null}
-
-                {analytics ? (
-                  <p className="mt-3 text-xs text-neutral-700">
-                    submission success {analytics.rates.submissionSuccessRate}% | flagged rate {analytics.rates.flaggedRate}% | strike events {" "}
-                    {analytics.integrity.strikeEvents} | autosave cadence p95 {analytics.reliability.autosaveCadenceP95Seconds ?? "n/a"}s
-                  </p>
-                ) : null}
-
-                <div className="mt-4 overflow-x-auto rounded-2xl border border-neutral-200 bg-white">
-                  <table className="ui-table min-w-[700px] text-xs">
-                    <thead>
-                      <tr>
-                        <th>Left Candidate</th>
-                        <th>Right Candidate</th>
-                        <th>Common</th>
-                        <th>Answer Sim.</th>
-                        <th>Timing Sim.</th>
-                        <th>Combined</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(similarity?.pairs ?? []).map((pair) => (
-                        <tr key={pair.id}>
-                          <td>
-                            {pair.leftCandidateName}
-                            <span className="ml-1 text-[11px] text-neutral-600">{pair.leftCandidateId}</span>
-                          </td>
-                          <td>
-                            {pair.rightCandidateName}
-                            <span className="ml-1 text-[11px] text-neutral-600">{pair.rightCandidateId}</span>
-                          </td>
-                          <td>{pair.commonAnswered}</td>
-                          <td>{pair.answerSimilarity}</td>
-                          <td>{pair.timingSimilarity}</td>
-                          <td className="font-semibold">{pair.combinedScore}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </article>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="ui-label">Starts At</label>
+                <input type="datetime-local" value={examStartsAt} onChange={(e) => setExamStartsAt(e.target.value)} className="ui-input" required />
+              </div>
+              <div>
+                <label className="ui-label">Ends At</label>
+                <input type="datetime-local" value={examEndsAt} onChange={(e) => setExamEndsAt(e.target.value)} className="ui-input" required />
+              </div>
             </div>
-          </section>
-        ) : null}
-      </main>
-    </div>
-  );
+
+            {/* Questions */}
+            <div>
+              <div className="mb-3 flex items-center justify-between">
+                <label className="ui-label !mb-0">Questions ({questions.length})</label>
+                <button
+                  type="button"
+                  onClick={addQuestion}
+                  className="border border-[var(--border)] px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
+                >
+                  + Add
+                </button>
+              </div>
+
+              <div className="space-y-3">
+                {questions.map((q, qi) => (
+                  <div key={qi} className="border border-[var(--border)] bg-[var(--surface)] p-4">
+                    <div className="mb-3 flex items-center justify-between">
+                      <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-[var(--text-soft)]">Q{qi + 1}</span>
+                      <button type="button" onClick={() => removeQuestion(qi)} className="font-mono text-[10px] text-[var(--danger)] hover:underline">
+                        Remove
+                      </button>
+                    </div>
+                    <input
+                      type="text"
+                      value={q.prompt}
+                      onChange={(e) => updateQuestion(qi, "prompt", e.target.value)}
+                      placeholder="Question prompt"
+                      className="ui-input mb-3"
+                    />
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {q.options.map((opt, oi) => (
+                        <div key={oi} className="flex items-center gap-2">
+                          <input
+                            type="radio"
+                            name={`correct-${qi}`}
+                            checked={q.correctOption === opt && opt !== ""}
+                            onChange={() => updateQuestion(qi, "correctOption", opt)}
+                            className="h-3.5 w-3.5 accent-[var(--black)]"
+                          />
+                          <input
+                            type="text"
+                            value={opt}
+                            onChange={(e) => updateOption(qi, oi, e.target.value)}
+                            placeholder={`Option ${String.fromCharCode(65 + oi)}`}
+                            className="ui-input !h-9 text-xs"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full bg-[var(--black)] py-3 text-[13px] font-bold uppercase tracking-wide text-[var(--accent)] hover:bg-[#1a1a1a] disabled:opacity-40 transition-colors"
+            >
+              {loading ? "Creating..." : "Create Exam"}
+            </button>
+          </form>
+        </main>
+      </div>
+    );
+  }
+
+  // ── Monitoring ──
+  if (view === "monitoring" && monitoring) {
+    return (
+      <div className="min-h-screen bg-[var(--bg)]">
+        <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[var(--bg)]/95 backdrop-blur-sm">
+          <div className="ui-shell flex h-14 items-center gap-3">
+            <button
+              onClick={() => {
+                setView("dashboard");
+                setMonitoring(null);
+                if (pollRef.current) clearInterval(pollRef.current);
+              }}
+              className="font-mono text-xs text-[var(--text-soft)] hover:text-[var(--text)] transition-colors"
+            >
+              ← Back
+            </button>
+            <span className="font-display text-sm font-bold tracking-tight">{monitoring.title}</span>
+            <span className="bg-[var(--accent)] px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-[var(--black)]">
+              Live
+            </span>
+          </div>
+        </header>
+
+        <main className="ui-shell py-8">
+          <div className="mb-6 grid gap-px bg-[var(--border)] sm:grid-cols-4 animate-in">
+            <StatCard label="Active" value={monitoring.activeCount} />
+            <StatCard label="Flagged" value={monitoring.flaggedCount} accent />
+            <StatCard label="Offline" value={monitoring.disconnectedCount} />
+            <StatCard label="Submitted" value={monitoring.submittedCount} />
+          </div>
+
+          <div className="mb-4 flex items-center justify-between animate-in delay-1">
+            <h2 className="font-display text-lg font-bold">Candidates</h2>
+            <button
+              onClick={() => downloadResults(selectedExamId)}
+              className="border border-[var(--border)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
+            >
+              Export CSV
+            </button>
+          </div>
+
+          <div className="overflow-x-auto border border-[var(--border)] animate-in delay-2">
+            <table className="w-full text-left text-sm">
+              <thead className="border-b border-[var(--border)] bg-[var(--bg-deep)]">
+                <tr>
+                  <th className="px-4 py-2.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-soft)]">Student</th>
+                  <th className="px-4 py-2.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-soft)]">Matric No.</th>
+                  <th className="px-4 py-2.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-soft)]">Status</th>
+                  <th className="px-4 py-2.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-soft)]">Strikes</th>
+                  <th className="px-4 py-2.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-soft)]">Last Event</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--border)]">
+                {monitoring.candidates.map((c) => (
+                  <tr key={c.sessionId} className="hover:bg-[var(--bg-deep)] transition-colors">
+                    <td className="px-4 py-2.5 text-sm">{c.candidateName}</td>
+                    <td className="px-4 py-2.5 font-mono text-xs">{c.candidateId}</td>
+                    <td className="px-4 py-2.5">
+                      <span
+                        className={`inline-block px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider ${c.status === "Active"
+                            ? "bg-[var(--accent)] text-[var(--black)]"
+                            : c.status === "Flagged"
+                              ? "bg-[var(--danger)] text-white"
+                              : c.status === "Submitted"
+                                ? "bg-[var(--bg-deep)] text-[var(--text)]"
+                                : "bg-[var(--bg-deep)] text-[var(--text-soft)]"
+                          }`}
+                      >
+                        {c.status}
+                      </span>
+                    </td>
+                    <td className="px-4 py-2.5 font-mono text-xs">{c.strikes}</td>
+                    <td className="px-4 py-2.5 font-mono text-[11px] text-[var(--text-soft)]">{c.lastEventType ?? "—"}</td>
+                  </tr>
+                ))}
+                {monitoring.candidates.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-8 text-center font-mono text-xs text-[var(--text-soft)]">
+                      No candidates have joined yet.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  return null;
 }
 
-function StatCard({
-  label,
-  value,
-  tone,
-}: {
-  label: string;
-  value: number;
-  tone: "light" | "muted" | "dark";
-}) {
-  const tones: Record<typeof tone, string> = {
-    light: "border-neutral-200 bg-white text-black",
-    muted: "border-neutral-200 bg-neutral-100 text-black",
-    dark: "border-black bg-black text-white",
-  };
-
+function StatCard({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
   return (
-    <article className={`rounded-xl border p-4 ${tones[tone]}`}>
-      <p className="ui-kicker">{label}</p>
-      <p className="font-heading mt-2 text-2xl font-semibold">{value}</p>
-    </article>
+    <div className={`p-5 ${accent ? "bg-[var(--black)]" : "bg-[var(--surface)]"}`}>
+      <p className={`font-mono text-3xl font-bold ${accent ? "text-[var(--accent)]" : "text-[var(--text)]"}`}>
+        {value}
+      </p>
+      <p className={`mt-1 font-mono text-[10px] uppercase tracking-wider ${accent ? "text-[var(--text-soft)]" : "text-[var(--text-soft)]"}`}>
+        {label}
+      </p>
+    </div>
   );
 }

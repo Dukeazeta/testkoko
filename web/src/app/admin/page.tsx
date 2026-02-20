@@ -33,6 +33,27 @@ interface MonitoringData {
   }>;
 }
 
+interface QuestionDraft {
+  prompt: string;
+  options: string[];
+  correctOptionIndex: number | null;
+}
+
+interface QuestionImportResponseData {
+  fileName: string;
+  importedCount: number;
+  issueCount: number;
+  issues: Array<{
+    question: string;
+    message: string;
+  }>;
+  questions: Array<{
+    prompt: string;
+    options: string[];
+    correctOption: string;
+  }>;
+}
+
 type ApiResult<T> = { ok: true; data: T } | { ok: false; error: { message: string } };
 
 type View = "auth" | "signup" | "dashboard" | "create" | "monitoring";
@@ -46,10 +67,12 @@ export default function LecturerPage() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const questionUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
   const [authName, setAuthName] = useState("");
+  const [showAuthPassword, setShowAuthPassword] = useState(false);
 
   const [examTitle, setExamTitle] = useState("");
   const [examCode, setExamCode] = useState("");
@@ -59,11 +82,9 @@ export default function LecturerPage() {
   const [rosterExamId, setRosterExamId] = useState("");
   const [rosterResult, setRosterResult] = useState("");
 
-  const [questions, setQuestions] = useState<Array<{
-    prompt: string;
-    options: string[];
-    correctOption: string;
-  }>>([]);
+  const [questions, setQuestions] = useState<QuestionDraft[]>([]);
+  const [questionImportLoading, setQuestionImportLoading] = useState(false);
+  const [questionImportResult, setQuestionImportResult] = useState("");
 
   const loadExams = useCallback(async () => {
     try {
@@ -122,7 +143,14 @@ export default function LecturerPage() {
           accessCode: examCode,
           startsAt: new Date(examStartsAt).toISOString(),
           endsAt: new Date(examEndsAt).toISOString(),
-          questions,
+          questions: questions.map((question) => ({
+            prompt: question.prompt,
+            options: question.options,
+            correctOption:
+              question.correctOptionIndex === null
+                ? ""
+                : (question.options[question.correctOptionIndex] ?? ""),
+          })),
         }),
       });
       const json = await res.json();
@@ -132,6 +160,56 @@ export default function LecturerPage() {
       await loadExams();
       setView("dashboard");
     } catch { setError("Network error."); setLoading(false); }
+  }
+
+  async function handleQuestionFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) {
+      return;
+    }
+
+    setError("");
+    setQuestionImportResult("");
+    setQuestionImportLoading(true);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch("/api/lecturer/exams/questions/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      const json: ApiResult<QuestionImportResponseData> = await res.json();
+
+      if (!json.ok) {
+        setError(json.error?.message || "Question import failed.");
+        return;
+      }
+
+      const importedQuestions: QuestionDraft[] = json.data.questions.map((question) => {
+        const correctOptionIndex = question.options.findIndex((option) => option === question.correctOption);
+
+        return {
+          prompt: question.prompt,
+          options: question.options,
+          correctOptionIndex: correctOptionIndex >= 0 ? correctOptionIndex : null,
+        };
+      });
+
+      setQuestions((prev) => [...prev, ...importedQuestions]);
+
+      const issueText = json.data.issueCount > 0 ? ` ${json.data.issueCount} item(s) were skipped.` : "";
+      setQuestionImportResult(
+        `Imported ${json.data.importedCount} question(s) from ${json.data.fileName}.${issueText}`,
+      );
+    } catch {
+      setError("Question import failed.");
+    } finally {
+      setQuestionImportLoading(false);
+      e.target.value = "";
+    }
   }
 
   async function handleUploadRoster(e: React.FormEvent) {
@@ -184,19 +262,29 @@ export default function LecturerPage() {
   }
 
   function addQuestion() {
-    setQuestions([...questions, { prompt: "", options: ["", "", "", ""], correctOption: "" }]);
+    setQuestions([...questions, { prompt: "", options: ["", "", "", ""], correctOptionIndex: null }]);
   }
 
   function updateQuestion(index: number, field: string, value: string) {
     const updated = [...questions];
     if (field === "prompt") updated[index].prompt = value;
-    else if (field === "correctOption") updated[index].correctOption = value;
+    setQuestions(updated);
+  }
+
+  function setCorrectOption(qIndex: number, oIndex: number) {
+    const updated = [...questions];
+    updated[qIndex].correctOptionIndex = oIndex;
     setQuestions(updated);
   }
 
   function updateOption(qIndex: number, oIndex: number, value: string) {
     const updated = [...questions];
     updated[qIndex].options[oIndex] = value;
+
+    if (updated[qIndex].correctOptionIndex === oIndex && value.trim().length === 0) {
+      updated[qIndex].correctOptionIndex = null;
+    }
+
     setQuestions(updated);
   }
 
@@ -261,13 +349,22 @@ export default function LecturerPage() {
             </div>
             <div>
               <label className="ui-label">Password</label>
-              <input
-                type="password"
-                value={authPassword}
-                onChange={(e) => setAuthPassword(e.target.value)}
-                className="ui-input"
-                required
-              />
+              <div className="relative">
+                <input
+                  type={showAuthPassword ? "text" : "password"}
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  className="ui-input pr-16"
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowAuthPassword((value) => !value)}
+                  className="absolute inset-y-0 right-0 px-3 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text)]"
+                >
+                  {showAuthPassword ? "Hide" : "Show"}
+                </button>
+              </div>
             </div>
             <button
               type="submit"
@@ -503,14 +600,39 @@ export default function LecturerPage() {
             <div>
               <div className="mb-3 flex items-center justify-between">
                 <label className="ui-label !mb-0">Questions ({questions.length})</label>
-                <button
-                  type="button"
-                  onClick={addQuestion}
-                  className="border border-[var(--border)] px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
-                >
-                  + Add
-                </button>
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={questionUploadInputRef}
+                    type="file"
+                    accept=".pdf,.doc,.docx,.txt,.md"
+                    onChange={handleQuestionFileUpload}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => questionUploadInputRef.current?.click()}
+                    disabled={questionImportLoading}
+                    className="border border-[var(--border)] px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] disabled:opacity-40 transition-colors"
+                  >
+                    {questionImportLoading ? "Importing..." : "Upload PDF/DOCX"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={addQuestion}
+                    className="border border-[var(--border)] px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
+                  >
+                    + Add
+                  </button>
+                </div>
               </div>
+
+              <p className="mb-3 font-mono text-[10px] text-[var(--text-soft)]">
+                For auto-import, format each question with options A-D and include an answer line like: Answer: B
+              </p>
+
+              {questionImportResult && (
+                <p className="mb-3 font-mono text-xs text-[var(--success)]">{questionImportResult}</p>
+              )}
 
               <div className="space-y-3">
                 {questions.map((q, qi) => (
@@ -534,8 +656,8 @@ export default function LecturerPage() {
                           <input
                             type="radio"
                             name={`correct-${qi}`}
-                            checked={q.correctOption === opt && opt !== ""}
-                            onChange={() => updateQuestion(qi, "correctOption", opt)}
+                            checked={q.correctOptionIndex === oi}
+                            onChange={() => setCorrectOption(qi, oi)}
                             className="h-3.5 w-3.5 accent-[var(--black)]"
                           />
                           <input

@@ -303,16 +303,43 @@ export async function createExam(
   }
 
   const questions = payload.questions ?? [];
+  const normalizedQuestions: Array<{ prompt: string; options: string[]; correctOption: string }> = [];
   for (let index = 0; index < questions.length; index += 1) {
     const question = questions[index];
     const prompt = question.prompt?.trim();
     const options = (question.options ?? []).map((option) => option.trim()).filter((option) => option.length > 0);
-    const uniqueOptions = new Set(options);
+    const uniqueOptions = new Set(options.map((option) => option.toLowerCase()));
     const correctOption = question.correctOption?.trim();
 
-    if (!prompt || options.length < 2 || uniqueOptions.size < 2 || !correctOption || !uniqueOptions.has(correctOption)) {
-      return runtimeError(400, "INVALID_REQUEST", `Question ${index + 1} is invalid.`);
+    if (!prompt) {
+      return runtimeError(400, "INVALID_REQUEST", `Question ${index + 1} is invalid: prompt is required.`);
     }
+
+    if (options.length < 2) {
+      return runtimeError(400, "INVALID_REQUEST", `Question ${index + 1} is invalid: at least 2 options are required.`);
+    }
+
+    if (uniqueOptions.size < 2) {
+      return runtimeError(400, "INVALID_REQUEST", `Question ${index + 1} is invalid: options must not all be duplicates.`);
+    }
+
+    if (!correctOption) {
+      return runtimeError(400, "INVALID_REQUEST", `Question ${index + 1} is invalid: select a correct option.`);
+    }
+
+    if (!options.includes(correctOption)) {
+      return runtimeError(
+        400,
+        "INVALID_REQUEST",
+        `Question ${index + 1} is invalid: correct option must match one option exactly.`,
+      );
+    }
+
+    normalizedQuestions.push({
+      prompt,
+      options,
+      correctOption,
+    });
   }
 
   try {
@@ -331,13 +358,13 @@ export async function createExam(
         },
       });
 
-      if (questions.length > 0) {
+      if (normalizedQuestions.length > 0) {
         await tx.question.createMany({
-          data: questions.map((question) => ({
+          data: normalizedQuestions.map((question) => ({
             examId: created.id,
-            prompt: question.prompt.trim(),
-            options: question.options.map((option) => option.trim()) as Prisma.InputJsonValue,
-            correctOption: question.correctOption.trim(),
+            prompt: question.prompt,
+            options: question.options as Prisma.InputJsonValue,
+            correctOption: question.correctOption,
           })),
         });
       }

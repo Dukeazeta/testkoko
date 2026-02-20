@@ -1,17 +1,24 @@
 import "dotenv/config";
 
-import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaLibSql } from "@prisma/adapter-libsql";
 import { PrismaClient, SessionPolicy } from "@prisma/client";
-import { Pool } from "pg";
 import { pathToFileURL } from "node:url";
 import { hash } from "bcryptjs";
 
-const databaseUrl =
-  process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/testkoko?schema=public";
+function buildSeedClient(): PrismaClient {
+  const url = process.env.TURSO_DATABASE_URL;
+  const authToken = process.env.TURSO_AUTH_TOKEN;
 
-const pool = new Pool({ connectionString: databaseUrl });
-const adapter = new PrismaPg(pool);
-const prisma = new PrismaClient({ adapter });
+  if (!url) {
+    throw new Error("TURSO_DATABASE_URL is not set");
+  }
+
+  const adapter = new PrismaLibSql({ url, authToken });
+
+  return new PrismaClient({ adapter });
+}
+
+const prisma = buildSeedClient();
 
 export async function seedDatabase() {
   const now = Date.now();
@@ -81,35 +88,35 @@ export async function seedDatabase() {
         id: "q-mth101-1",
         examId: exam.id,
         prompt: "What is 12 + 9?",
-        options: ["19", "20", "21", "22"],
+        options: JSON.stringify(["19", "20", "21", "22"]),
         correctOption: "21",
       },
       {
         id: "q-mth101-2",
         examId: exam.id,
         prompt: "Solve: 7 x 8",
-        options: ["54", "56", "58", "60"],
+        options: JSON.stringify(["54", "56", "58", "60"]),
         correctOption: "56",
       },
       {
         id: "q-mth101-3",
         examId: exam.id,
         prompt: "Which value is prime?",
-        options: ["21", "27", "31", "33"],
+        options: JSON.stringify(["21", "27", "31", "33"]),
         correctOption: "31",
       },
       {
         id: "q-mth101-4",
         examId: exam.id,
         prompt: "What is 3/4 as a decimal?",
-        options: ["0.5", "0.65", "0.7", "0.75"],
+        options: JSON.stringify(["0.5", "0.65", "0.7", "0.75"]),
         correctOption: "0.75",
       },
       {
         id: "q-mth101-5",
         examId: exam.id,
         prompt: "Simplify: 2(x + 5) when x = 4",
-        options: ["12", "14", "16", "18"],
+        options: JSON.stringify(["12", "14", "16", "18"]),
         correctOption: "18",
       },
     ],
@@ -118,7 +125,6 @@ export async function seedDatabase() {
 
 export async function closeSeedResources() {
   await prisma.$disconnect();
-  await pool.end();
 }
 
 const isDirectRun = process.argv[1] ? import.meta.url === pathToFileURL(process.argv[1]).href : false;

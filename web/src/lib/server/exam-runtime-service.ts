@@ -17,33 +17,33 @@ import { validateSession } from "@/lib/server/auth-service";
 
 type RuntimeResult =
   | {
-      status: number;
-      body: ExamRuntimeSuccessResponse;
-    }
+    status: number;
+    body: ExamRuntimeSuccessResponse;
+  }
   | {
-      status: number;
-      body: ExamRuntimeErrorResponse;
-    };
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
 
 type AutosaveResult =
   | {
-      status: number;
-      body: ExamAutosaveSuccessResponse;
-    }
+    status: number;
+    body: ExamAutosaveSuccessResponse;
+  }
   | {
-      status: number;
-      body: ExamRuntimeErrorResponse;
-    };
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
 
 type SubmitResult =
   | {
-      status: number;
-      body: ExamSubmitSuccessResponse;
-    }
+    status: number;
+    body: ExamSubmitSuccessResponse;
+  }
   | {
-      status: number;
-      body: ExamRuntimeErrorResponse;
-    };
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
 
 export interface FinalizedSubmission {
   receiptId: string;
@@ -63,31 +63,31 @@ export interface FinalizeSubmissionResult {
 
 type RuntimeContextResult =
   | {
-      ok: true;
-      session: {
-        id: string;
-        examId: string;
-        candidateRecordId: string;
-        expiresAt: Date;
-        extendedUntil: Date | null;
-        status: SessionStatus;
-      };
-      exam: {
-        id: string;
-        title: string;
-        startsAt: Date;
-        endsAt: Date;
-      };
-      candidate: {
-        candidateId: string;
-        displayName: string;
-      };
-    }
-  | {
-      ok: false;
-      status: number;
-      body: ExamRuntimeErrorResponse;
+    ok: true;
+    session: {
+      id: string;
+      examId: string;
+      candidateRecordId: string;
+      expiresAt: Date;
+      extendedUntil: Date | null;
+      status: SessionStatus;
     };
+    exam: {
+      id: string;
+      title: string;
+      startsAt: Date;
+      endsAt: Date;
+    };
+    candidate: {
+      candidateId: string;
+      displayName: string;
+    };
+  }
+  | {
+    ok: false;
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
 
 function runtimeError(
   status: number,
@@ -208,14 +208,14 @@ export async function finalizeSubmissionBySessionId(
         questionsForSession.length > 0
           ? questionsForSession.map((entry) => ({ id: entry.questionId, correctOption: entry.question.correctOption }))
           : await tx.question.findMany({
-              where: {
-                examId: currentSession.examId,
-              },
-              select: {
-                id: true,
-                correctOption: true,
-              },
-            });
+            where: {
+              examId: currentSession.examId,
+            },
+            select: {
+              id: true,
+              correctOption: true,
+            },
+          });
 
       const answersByQuestionId = new Map(answers.map((answer) => [answer.questionId, answer.selectedOption]));
       const answeredQuestionIds = new Set(answers.map((answer) => answer.questionId));
@@ -470,7 +470,6 @@ async function ensureSessionQuestionSet(sessionId: string, examId: string) {
       questionId: question.id,
       orderIndex: index + 1,
     })),
-    skipDuplicates: true,
   });
 
   return prisma.sessionQuestion.findMany({

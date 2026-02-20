@@ -5,7 +5,7 @@ import { closeSeedResources, seedDatabase } from "../../prisma/seed";
 import { loginCandidate, validateSession } from "../../src/lib/server/auth-service";
 import { getExamRuntime, autosaveExamAnswer, finalizeSubmissionBySessionId, submitExam } from "../../src/lib/server/exam-runtime-service";
 import { ingestExamEvent } from "../../src/lib/server/exam-monitoring-service";
-import { closePrismaConnections, prisma } from "../../src/lib/server/prisma";
+import { prisma } from "../../src/lib/server/prisma";
 
 
 describe("Reliability integration flows", () => {
@@ -15,7 +15,7 @@ describe("Reliability integration flows", () => {
 
   afterAll(async () => {
 
-    await closePrismaConnections();
+    await prisma.$disconnect();
     await closeSeedResources();
   });
 

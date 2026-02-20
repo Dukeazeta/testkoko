@@ -189,7 +189,7 @@ Runs tests, lint, and production build in sequence.
 
 1. Set production env values from `.env.example`.
 2. Ensure `ADMIN_PASSWORD` is changed from the default.
-3. Run `pnpm prisma:push` and `pnpm prisma:seed` in deployment environment.
+3. Run `pnpm prisma:migration:deploy` and `pnpm prisma:seed` in deployment environment.
 4. Run `pnpm verify` before releasing.
 5. Confirm `/api/health` returns status `ok` after deploy.
 

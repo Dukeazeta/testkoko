@@ -2,15 +2,14 @@ import "dotenv/config";
 
 import { defineConfig } from "prisma/config";
 
-const databaseUrl =
-  process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/testkoko?schema=public";
-
 export default defineConfig({
   schema: "prisma/schema.prisma",
   migrations: {
     path: "prisma/migrations",
   },
   datasource: {
-    url: databaseUrl,
+    // Prisma CLI commands (migrate diff, db push) use a local SQLite file.
+    // The runtime adapter (@prisma/adapter-libsql) handles remote Turso connections.
+    url: "file:./dev.db",
   },
 });

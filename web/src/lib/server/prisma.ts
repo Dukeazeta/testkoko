@@ -1,33 +1,28 @@
-import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaLibSql } from "@prisma/adapter-libsql";
 import { PrismaClient } from "@prisma/client";
-import { Pool } from "pg";
-
-const databaseUrl =
-  process.env.DATABASE_URL ?? "postgresql://postgres:postgres@localhost:5432/testkoko?schema=public";
 
 const globalForPrisma = globalThis as unknown as {
   prisma?: PrismaClient;
-  prismaPool?: Pool;
-  prismaAdapter?: PrismaPg;
 };
 
-const pool = globalForPrisma.prismaPool ?? new Pool({ connectionString: databaseUrl });
-const adapter = globalForPrisma.prismaAdapter ?? new PrismaPg(pool);
+function buildPrismaClient(): PrismaClient {
+  const url = process.env.TURSO_DATABASE_URL;
+  const authToken = process.env.TURSO_AUTH_TOKEN;
 
-export const prisma =
-  globalForPrisma.prisma ??
-  new PrismaClient({
+  if (!url) {
+    throw new Error("TURSO_DATABASE_URL is not set");
+  }
+
+  const adapter = new PrismaLibSql({ url, authToken });
+
+  return new PrismaClient({
     adapter,
     log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
   });
+}
+
+export const prisma = globalForPrisma.prisma ?? buildPrismaClient();
 
 if (process.env.NODE_ENV !== "production") {
   globalForPrisma.prisma = prisma;
-  globalForPrisma.prismaPool = pool;
-  globalForPrisma.prismaAdapter = adapter;
-}
-
-export async function closePrismaConnections(): Promise<void> {
-  await prisma.$disconnect();
-  await pool.end();
 }

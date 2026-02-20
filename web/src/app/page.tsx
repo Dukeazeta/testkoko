@@ -80,8 +80,8 @@ export default function Home() {
           </nav>
 
           <div className="flex items-center gap-2">
-            <Link href="/candidate" className="hidden text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)] transition-colors md:inline-flex">
-              Student Login
+            <Link href="/admin" className="hidden text-sm font-medium text-[var(--text-muted)] hover:text-[var(--text)] transition-colors md:inline-flex">
+              Lecturer Sign In
             </Link>
             <Link href="/admin" className="ui-btn-primary inline-flex">
               Get Started
@@ -105,7 +105,7 @@ export default function Home() {
               can&apos;t cheat on.
             </h1>
             <p className="mt-6 max-w-xl text-base leading-7 text-[var(--text-muted)] md:text-lg md:leading-8">
-              TestKOKO gives lecturers a simple, browser-based platform to create exams, monitor students in real time, and export results — with built-in anti-cheat that actually works.
+              TestKOKO gives lecturers a simple, browser-based platform to create exams, monitor students in real time, and export results. Students only access exams through links and codes shared by their lecturer.
             </p>
           </div>
 
@@ -113,8 +113,8 @@ export default function Home() {
             <Link href="/admin" className="inline-flex bg-[var(--black)] px-7 py-3.5 text-[13px] font-bold uppercase tracking-wide text-[var(--accent)] hover:bg-[#1a1a1a] transition-colors">
               Create Your First Exam
             </Link>
-            <Link href="/candidate" className="inline-flex border-2 border-[var(--border-strong)] px-7 py-3.5 text-[13px] font-bold uppercase tracking-wide text-[var(--text)] hover:border-[var(--black)] transition-colors">
-              I&apos;m a Student
+            <Link href="/admin" className="inline-flex border-2 border-[var(--border-strong)] px-7 py-3.5 text-[13px] font-bold uppercase tracking-wide text-[var(--text)] hover:border-[var(--black)] transition-colors">
+              Lecturer Sign In
             </Link>
           </div>
 
@@ -213,10 +213,10 @@ export default function Home() {
                     Get Started Free
                   </Link>
                   <Link
-                    href="/candidate"
+                    href="/admin"
                     className="inline-flex border-2 border-[var(--border-strong)] px-7 py-3.5 text-[13px] font-bold uppercase tracking-wide text-white hover:border-white transition-colors"
                   >
-                    Student Login
+                    Lecturer Sign In
                   </Link>
                 </div>
               </div>
@@ -257,7 +257,7 @@ export default function Home() {
                 </p>
                 <ul className="mt-3 space-y-2">
                   <li><Link href="/admin" className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">Lecturer Dashboard</Link></li>
-                  <li><Link href="/candidate" className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">Student Login</Link></li>
+                  <li><Link href="/admin" className="text-sm text-[var(--text-muted)] hover:text-[var(--text)] transition-colors">Lecturer Sign In</Link></li>
                 </ul>
               </div>
             </div>

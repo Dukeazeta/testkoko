@@ -21,10 +21,10 @@ export default function NotFound() {
                         Go Home
                     </Link>
                     <Link
-                        href="/candidate"
+                        href="/admin"
                         className="inline-flex border-2 border-[var(--border-strong)] px-6 py-3 text-[13px] font-bold uppercase tracking-wide text-[var(--text)] hover:border-[var(--black)] transition-colors"
                     >
-                        Take Exam
+                        Lecturer Sign In
                     </Link>
                 </div>
             </div>

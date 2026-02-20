@@ -1,15 +1,25 @@
-import { Prisma, SessionPolicy } from "@prisma/client";
+import { Prisma, SessionPolicy, SessionStatus, SubmissionMode } from "@prisma/client";
 
 import { normalizeCandidateId, normalizeSurname } from "@/lib/auth/candidate-identity";
 import type {
   AdminExamCreateRequestBody,
   AdminExamCreateSuccessResponse,
+  AdminExamDetailSuccessResponse,
+  AdminExamLifecycleRequestBody,
+  AdminExamLifecycleSuccessResponse,
   AdminExamListSuccessResponse,
+  AdminExamQuestionsUpdateRequestBody,
+  AdminExamQuestionsUpdateSuccessResponse,
   AdminExamSummary,
+  AdminExamStudentsUpdateRequestBody,
+  AdminExamStudentsUpdateSuccessResponse,
+  AdminExamUpdateRequestBody,
+  AdminExamUpdateSuccessResponse,
   AdminRosterUploadRequestBody,
   AdminRosterUploadSuccessResponse,
   ExamRuntimeErrorResponse,
 } from "@/lib/exam/contracts";
+import { finalizeSubmissionBySessionId, type FinalizeSubmissionResult } from "@/lib/server/exam-runtime-service";
 import { prisma } from "@/lib/server/prisma";
 
 type AdminExamCreateResult =
@@ -26,6 +36,56 @@ type AdminExamListResult =
   | {
     status: number;
     body: AdminExamListSuccessResponse;
+  }
+  | {
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
+
+type AdminExamDetailResult =
+  | {
+    status: number;
+    body: AdminExamDetailSuccessResponse;
+  }
+  | {
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
+
+type AdminExamUpdateResult =
+  | {
+    status: number;
+    body: AdminExamUpdateSuccessResponse;
+  }
+  | {
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
+
+type AdminExamQuestionsUpdateResult =
+  | {
+    status: number;
+    body: AdminExamQuestionsUpdateSuccessResponse;
+  }
+  | {
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
+
+type AdminExamStudentsUpdateResult =
+  | {
+    status: number;
+    body: AdminExamStudentsUpdateSuccessResponse;
+  }
+  | {
+    status: number;
+    body: ExamRuntimeErrorResponse;
+  };
+
+type AdminExamLifecycleResult =
+  | {
+    status: number;
+    body: AdminExamLifecycleSuccessResponse;
   }
   | {
     status: number;
@@ -102,6 +162,58 @@ function parseThreshold(input: number | undefined, fallback: number): number {
   }
 
   return input;
+}
+
+function normalizeQuestions(
+  questions: Array<{ prompt: string; options: string[]; correctOption: string }> | undefined,
+):
+  | { ok: true; value: Array<{ prompt: string; options: string[]; correctOption: string }> }
+  | { ok: false; message: string } {
+  const source = questions ?? [];
+  const normalizedQuestions: Array<{ prompt: string; options: string[]; correctOption: string }> = [];
+
+  for (let index = 0; index < source.length; index += 1) {
+    const question = source[index];
+    const prompt = question.prompt?.trim();
+    const options = (question.options ?? []).map((option) => option.trim()).filter((option) => option.length > 0);
+    const uniqueOptions = new Set(options.map((option) => option.toLowerCase()));
+    const correctOption = question.correctOption?.trim();
+
+    if (!prompt) {
+      return { ok: false, message: `Question ${index + 1} is invalid: prompt is required.` };
+    }
+
+    if (options.length < 2) {
+      return { ok: false, message: `Question ${index + 1} is invalid: at least 2 options are required.` };
+    }
+
+    if (uniqueOptions.size < 2) {
+      return { ok: false, message: `Question ${index + 1} is invalid: options must not all be duplicates.` };
+    }
+
+    if (!correctOption) {
+      return { ok: false, message: `Question ${index + 1} is invalid: select a correct option.` };
+    }
+
+    if (!options.includes(correctOption)) {
+      return {
+        ok: false,
+        message: `Question ${index + 1} is invalid: correct option must match one option exactly.`,
+      };
+    }
+
+    normalizedQuestions.push({
+      prompt,
+      options,
+      correctOption,
+    });
+  }
+
+  return { ok: true, value: normalizedQuestions };
+}
+
+function canEditExamContent(examStartsAt: Date): boolean {
+  return Date.now() < examStartsAt.getTime();
 }
 
 function parseCsvLine(line: string): string[] {
@@ -302,45 +414,12 @@ export async function createExam(
     );
   }
 
-  const questions = payload.questions ?? [];
-  const normalizedQuestions: Array<{ prompt: string; options: string[]; correctOption: string }> = [];
-  for (let index = 0; index < questions.length; index += 1) {
-    const question = questions[index];
-    const prompt = question.prompt?.trim();
-    const options = (question.options ?? []).map((option) => option.trim()).filter((option) => option.length > 0);
-    const uniqueOptions = new Set(options.map((option) => option.toLowerCase()));
-    const correctOption = question.correctOption?.trim();
-
-    if (!prompt) {
-      return runtimeError(400, "INVALID_REQUEST", `Question ${index + 1} is invalid: prompt is required.`);
-    }
-
-    if (options.length < 2) {
-      return runtimeError(400, "INVALID_REQUEST", `Question ${index + 1} is invalid: at least 2 options are required.`);
-    }
-
-    if (uniqueOptions.size < 2) {
-      return runtimeError(400, "INVALID_REQUEST", `Question ${index + 1} is invalid: options must not all be duplicates.`);
-    }
-
-    if (!correctOption) {
-      return runtimeError(400, "INVALID_REQUEST", `Question ${index + 1} is invalid: select a correct option.`);
-    }
-
-    if (!options.includes(correctOption)) {
-      return runtimeError(
-        400,
-        "INVALID_REQUEST",
-        `Question ${index + 1} is invalid: correct option must match one option exactly.`,
-      );
-    }
-
-    normalizedQuestions.push({
-      prompt,
-      options,
-      correctOption,
-    });
+  const normalizedQuestionsResult = normalizeQuestions(payload.questions);
+  if (!normalizedQuestionsResult.ok) {
+    return runtimeError(400, "INVALID_REQUEST", normalizedQuestionsResult.message);
   }
+
+  const normalizedQuestions = normalizedQuestionsResult.value;
 
   try {
     const exam = await prisma.$transaction(async (tx) => {
@@ -398,6 +477,442 @@ export async function createExam(
 
     throw error;
   }
+}
+
+async function loadExamSummaryById(examId: string) {
+  return prisma.exam.findUnique({
+    where: {
+      id: examId,
+    },
+    include: {
+      _count: {
+        select: {
+          candidates: true,
+          questions: true,
+        },
+      },
+    },
+  });
+}
+
+export async function updateExamLifecycle(
+  examIdInput: string,
+  payload: AdminExamLifecycleRequestBody,
+  lecturerId: string,
+): Promise<AdminExamLifecycleResult> {
+  const examId = examIdInput.trim();
+  const action = payload.action;
+
+  if (!examId || (action !== "start" && action !== "end")) {
+    return runtimeError(400, "INVALID_REQUEST", "examId and a valid action (start or end) are required.");
+  }
+
+  const now = new Date();
+  const exam = await loadExamSummaryById(examId);
+
+  if (!exam) {
+    return runtimeError(404, "EXAM_NOT_FOUND", "Exam does not exist.");
+  }
+
+  if (exam.lecturerId !== lecturerId) {
+    return runtimeError(403, "FORBIDDEN", "You do not own this exam.");
+  }
+
+  if (action === "start") {
+    if (exam.endsAt.getTime() <= now.getTime()) {
+      return runtimeError(409, "INVALID_REQUEST", "Exam has already ended and cannot be started.");
+    }
+
+    if (exam.startsAt.getTime() <= now.getTime()) {
+      return runtimeError(409, "INVALID_REQUEST", "Exam has already started.");
+    }
+
+    const updated = await prisma.exam.update({
+      where: {
+        id: examId,
+      },
+      data: {
+        startsAt: now,
+      },
+      include: {
+        _count: {
+          select: {
+            candidates: true,
+            questions: true,
+          },
+        },
+      },
+    });
+
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        data: {
+          action,
+          autoSubmittedCount: 0,
+          exam: toExamSummary(updated),
+        },
+      },
+    };
+  }
+
+  if (exam.endsAt.getTime() <= now.getTime()) {
+    return runtimeError(409, "INVALID_REQUEST", "Exam has already ended.");
+  }
+
+  const activeSessions = await prisma.examSession.findMany({
+    where: {
+      examId,
+      status: SessionStatus.active,
+    },
+    select: {
+      id: true,
+    },
+  });
+
+  const updated = await prisma.exam.update({
+    where: {
+      id: examId,
+    },
+    data: {
+      endsAt: now,
+    },
+    include: {
+      _count: {
+        select: {
+          candidates: true,
+          questions: true,
+        },
+      },
+    },
+  });
+
+  const outcomes: FinalizeSubmissionResult[] = [];
+  for (const session of activeSessions) {
+    const outcome = await finalizeSubmissionBySessionId(session.id, SubmissionMode.timeout);
+    outcomes.push(outcome);
+  }
+
+  const autoSubmittedCount = outcomes.reduce((count, outcome) => {
+    if (!outcome.blocked && outcome.submission && !outcome.alreadySubmitted) {
+      return count + 1;
+    }
+
+    return count;
+  }, 0);
+
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      data: {
+        action,
+        autoSubmittedCount,
+        exam: toExamSummary(updated),
+      },
+    },
+  };
+}
+
+export async function getExamDetail(
+  examIdInput: string,
+  lecturerId: string,
+): Promise<AdminExamDetailResult> {
+  const examId = examIdInput.trim();
+  if (!examId) {
+    return runtimeError(400, "INVALID_REQUEST", "examId is required.");
+  }
+
+  const exam = await prisma.exam.findUnique({
+    where: {
+      id: examId,
+    },
+    include: {
+      _count: {
+        select: {
+          candidates: true,
+          questions: true,
+        },
+      },
+      questions: {
+        orderBy: {
+          createdAt: "asc",
+        },
+      },
+      candidates: {
+        orderBy: {
+          candidateId: "asc",
+        },
+      },
+    },
+  });
+
+  if (!exam) {
+    return runtimeError(404, "EXAM_NOT_FOUND", "Exam does not exist.");
+  }
+
+  if (exam.lecturerId !== lecturerId) {
+    return runtimeError(403, "FORBIDDEN", "You do not own this exam.");
+  }
+
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      data: {
+        exam: toExamSummary(exam),
+        questions: exam.questions.map((question) => ({
+          questionId: question.id,
+          prompt: question.prompt,
+          options: Array.isArray(question.options)
+            ? question.options.filter((value): value is string => typeof value === "string")
+            : [],
+          correctOption: question.correctOption,
+        })),
+        students: exam.candidates.map((candidate) => ({
+          candidateId: candidate.candidateId,
+          surname: candidate.surnameNormalized,
+          displayName: candidate.displayName,
+        })),
+      },
+    },
+  };
+}
+
+export async function updateExamDetails(
+  examIdInput: string,
+  payload: AdminExamUpdateRequestBody,
+  lecturerId: string,
+): Promise<AdminExamUpdateResult> {
+  const examId = examIdInput.trim();
+  if (!examId) {
+    return runtimeError(400, "INVALID_REQUEST", "examId is required.");
+  }
+
+  const exam = await loadExamSummaryById(examId);
+  if (!exam) {
+    return runtimeError(404, "EXAM_NOT_FOUND", "Exam does not exist.");
+  }
+
+  if (exam.lecturerId !== lecturerId) {
+    return runtimeError(403, "FORBIDDEN", "You do not own this exam.");
+  }
+
+  if (!canEditExamContent(exam.startsAt)) {
+    return runtimeError(409, "INVALID_REQUEST", "Exam details can only be edited before the exam starts.");
+  }
+
+  const title = payload.title === undefined ? exam.title : payload.title.trim();
+  const accessCode = payload.accessCode === undefined ? exam.accessCode : payload.accessCode.trim().toUpperCase();
+  const startsAt = payload.startsAt === undefined ? exam.startsAt : parseIsoDate(payload.startsAt);
+  const endsAt = payload.endsAt === undefined ? exam.endsAt : parseIsoDate(payload.endsAt);
+
+  if (!title || !accessCode || !startsAt || !endsAt) {
+    return runtimeError(400, "INVALID_REQUEST", "title, accessCode, startsAt, and endsAt must be valid.");
+  }
+
+  if (endsAt.getTime() <= startsAt.getTime()) {
+    return runtimeError(400, "INVALID_REQUEST", "endsAt must be later than startsAt.");
+  }
+
+  try {
+    const updated = await prisma.exam.update({
+      where: {
+        id: examId,
+      },
+      data: {
+        title,
+        accessCode,
+        startsAt,
+        endsAt,
+      },
+      include: {
+        _count: {
+          select: {
+            candidates: true,
+            questions: true,
+          },
+        },
+      },
+    });
+
+    return {
+      status: 200,
+      body: {
+        ok: true,
+        data: {
+          exam: toExamSummary(updated),
+        },
+      },
+    };
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      return runtimeError(409, "INVALID_REQUEST", "Exam access code already exists.");
+    }
+
+    throw error;
+  }
+}
+
+export async function replaceExamQuestions(
+  examIdInput: string,
+  payload: AdminExamQuestionsUpdateRequestBody,
+  lecturerId: string,
+): Promise<AdminExamQuestionsUpdateResult> {
+  const examId = examIdInput.trim();
+  if (!examId) {
+    return runtimeError(400, "INVALID_REQUEST", "examId is required.");
+  }
+
+  const exam = await prisma.exam.findUnique({
+    where: {
+      id: examId,
+    },
+    select: {
+      id: true,
+      lecturerId: true,
+      startsAt: true,
+    },
+  });
+
+  if (!exam) {
+    return runtimeError(404, "EXAM_NOT_FOUND", "Exam does not exist.");
+  }
+
+  if (exam.lecturerId !== lecturerId) {
+    return runtimeError(403, "FORBIDDEN", "You do not own this exam.");
+  }
+
+  if (!canEditExamContent(exam.startsAt)) {
+    return runtimeError(409, "INVALID_REQUEST", "Questions can only be edited before the exam starts.");
+  }
+
+  const normalizedQuestionsResult = normalizeQuestions(payload.questions);
+  if (!normalizedQuestionsResult.ok) {
+    return runtimeError(400, "INVALID_REQUEST", normalizedQuestionsResult.message);
+  }
+
+  const questions = normalizedQuestionsResult.value;
+
+  await prisma.$transaction(async (tx) => {
+    await tx.question.deleteMany({
+      where: {
+        examId,
+      },
+    });
+
+    if (questions.length > 0) {
+      await tx.question.createMany({
+        data: questions.map((question) => ({
+          examId,
+          prompt: question.prompt,
+          options: question.options as Prisma.InputJsonValue,
+          correctOption: question.correctOption,
+        })),
+      });
+    }
+  });
+
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      data: {
+        examId,
+        questionCount: questions.length,
+      },
+    },
+  };
+}
+
+export async function replaceExamStudents(
+  examIdInput: string,
+  payload: AdminExamStudentsUpdateRequestBody,
+  lecturerId: string,
+): Promise<AdminExamStudentsUpdateResult> {
+  const examId = examIdInput.trim();
+  if (!examId) {
+    return runtimeError(400, "INVALID_REQUEST", "examId is required.");
+  }
+
+  const exam = await prisma.exam.findUnique({
+    where: {
+      id: examId,
+    },
+    select: {
+      id: true,
+      lecturerId: true,
+      startsAt: true,
+    },
+  });
+
+  if (!exam) {
+    return runtimeError(404, "EXAM_NOT_FOUND", "Exam does not exist.");
+  }
+
+  if (exam.lecturerId !== lecturerId) {
+    return runtimeError(403, "FORBIDDEN", "You do not own this exam.");
+  }
+
+  if (!canEditExamContent(exam.startsAt)) {
+    return runtimeError(409, "INVALID_REQUEST", "Students can only be edited before the exam starts.");
+  }
+
+  const source = payload.students ?? [];
+  const byCandidateId = new Map<string, { candidateId: string; surnameNormalized: string; displayName: string }>();
+
+  for (let index = 0; index < source.length; index += 1) {
+    const student = source[index];
+    const candidateIdRaw = student.candidateId?.trim();
+    const surnameRaw = student.surname?.trim();
+
+    if (!candidateIdRaw || !surnameRaw) {
+      return runtimeError(400, "INVALID_REQUEST", `Student ${index + 1} is invalid: candidateId and surname are required.`);
+    }
+
+    const candidateId = normalizeCandidateId(candidateIdRaw);
+    const surnameNormalized = normalizeSurname(surnameRaw);
+    const displayName = student.displayName?.trim() || `${candidateId} ${surnameRaw}`;
+
+    byCandidateId.set(candidateId, {
+      candidateId,
+      surnameNormalized,
+      displayName,
+    });
+  }
+
+  const normalizedStudents = Array.from(byCandidateId.values());
+
+  await prisma.$transaction(async (tx) => {
+    await tx.candidate.deleteMany({
+      where: {
+        examId,
+      },
+    });
+
+    if (normalizedStudents.length > 0) {
+      await tx.candidate.createMany({
+        data: normalizedStudents.map((student) => ({
+          examId,
+          candidateId: student.candidateId,
+          surnameNormalized: student.surnameNormalized,
+          displayName: student.displayName,
+        })),
+      });
+    }
+  });
+
+  return {
+    status: 200,
+    body: {
+      ok: true,
+      data: {
+        examId,
+        studentCount: normalizedStudents.length,
+      },
+    },
+  };
 }
 
 export async function uploadExamRosterCsv(

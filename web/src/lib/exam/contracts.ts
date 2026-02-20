@@ -154,6 +154,87 @@ export interface AdminExamCreateSuccessResponse {
   };
 }
 
+export interface AdminExamLifecycleRequestBody {
+  action?: "start" | "end";
+}
+
+export interface AdminExamLifecycleSuccessResponse {
+  ok: true;
+  data: {
+    action: "start" | "end";
+    autoSubmittedCount: number;
+    exam: AdminExamSummary;
+  };
+}
+
+export interface AdminExamDetailQuestion {
+  questionId: string;
+  prompt: string;
+  options: string[];
+  correctOption: string;
+}
+
+export interface AdminExamDetailStudent {
+  candidateId: string;
+  surname: string;
+  displayName: string;
+}
+
+export interface AdminExamDetailSuccessResponse {
+  ok: true;
+  data: {
+    exam: AdminExamSummary;
+    questions: AdminExamDetailQuestion[];
+    students: AdminExamDetailStudent[];
+  };
+}
+
+export interface AdminExamUpdateRequestBody {
+  accessCode?: string;
+  title?: string;
+  startsAt?: string;
+  endsAt?: string;
+}
+
+export interface AdminExamUpdateSuccessResponse {
+  ok: true;
+  data: {
+    exam: AdminExamSummary;
+  };
+}
+
+export interface AdminExamQuestionsUpdateRequestBody {
+  questions?: Array<{
+    prompt: string;
+    options: string[];
+    correctOption: string;
+  }>;
+}
+
+export interface AdminExamQuestionsUpdateSuccessResponse {
+  ok: true;
+  data: {
+    examId: string;
+    questionCount: number;
+  };
+}
+
+export interface AdminExamStudentsUpdateRequestBody {
+  students?: Array<{
+    candidateId: string;
+    surname: string;
+    displayName?: string;
+  }>;
+}
+
+export interface AdminExamStudentsUpdateSuccessResponse {
+  ok: true;
+  data: {
+    examId: string;
+    studentCount: number;
+  };
+}
+
 export interface AdminExamListSuccessResponse {
   ok: true;
   data: {

@@ -15,7 +15,8 @@
     "prisma:migration:deploy": "pnpm prisma:migration:sql && pnpm prisma:migration:apply",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "tsx prisma/seed.ts",
+    "prisma:seed:reset": "cross-env ALLOW_DESTRUCTIVE_SEED=true tsx prisma/seed.ts --reset"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.1",
@@ -37,6 +38,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "babel-plugin-react-compiler": "1.0.0",
+    "cross-env": "^10.1.0",
     "dotenv": "^17.3.1",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",

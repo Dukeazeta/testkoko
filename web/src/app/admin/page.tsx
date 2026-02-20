@@ -54,6 +54,12 @@ interface QuestionImportResponseData {
   }>;
 }
 
+interface ExamLifecycleData {
+  action: "start" | "end";
+  autoSubmittedCount: number;
+  exam: ExamSummary;
+}
+
 type ApiResult<T> = { ok: true; data: T } | { ok: false; error: { message: string } };
 
 type View = "auth" | "signup" | "dashboard" | "create" | "monitoring";
@@ -65,7 +71,9 @@ export default function LecturerPage() {
   const [monitoring, setMonitoring] = useState<MonitoringData | null>(null);
   const [selectedExamId, setSelectedExamId] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
+  const [lifecycleBusyKey, setLifecycleBusyKey] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const questionUploadInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -87,11 +95,26 @@ export default function LecturerPage() {
   const [questionImportResult, setQuestionImportResult] = useState("");
 
   const loadExams = useCallback(async () => {
+    setError("");
     try {
       const res = await fetch("/api/lecturer/exams");
       const json: ApiResult<{ exams: ExamSummary[] }> = await res.json();
-      if (json.ok) setExams(json.data.exams);
-    } catch { /* silent */ }
+      if (json.ok) {
+        setExams(json.data.exams);
+        return;
+      }
+
+      setExams([]);
+      setError(json.error?.message || "Unable to load exams.");
+
+      if (res.status === 401) {
+        await signOut({ redirect: false });
+        setView("auth");
+      }
+    } catch {
+      setExams([]);
+      setError("Unable to load exams right now.");
+    }
   }, []);
 
   useEffect(() => {
@@ -133,6 +156,7 @@ export default function LecturerPage() {
   async function handleCreateExam(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    setNotice("");
     setLoading(true);
     try {
       const res = await fetch("/api/lecturer/exams", {
@@ -215,6 +239,7 @@ export default function LecturerPage() {
   async function handleUploadRoster(e: React.FormEvent) {
     e.preventDefault();
     setError("");
+    setNotice("");
     setRosterResult("");
     if (!rosterExamId || !rosterCsv.trim()) { setError("Select an exam and paste CSV data."); return; }
     setLoading(true);
@@ -259,6 +284,44 @@ export default function LecturerPage() {
     a.download = `results-${examId}.csv`;
     a.click();
     URL.revokeObjectURL(url);
+  }
+
+  async function handleExamLifecycle(examId: string, action: "start" | "end") {
+    setError("");
+    setNotice("");
+    const busyKey = `${examId}:${action}`;
+    setLifecycleBusyKey(busyKey);
+
+    try {
+      const res = await fetch(`/api/lecturer/exams/${examId}/lifecycle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+
+      const json: ApiResult<ExamLifecycleData> = await res.json();
+      if (!json.ok) {
+        setError(json.error?.message || "Failed to update exam lifecycle.");
+        await loadExams();
+        return;
+      }
+
+      const nextNotice =
+        action === "end"
+          ? `Exam ended. Auto-submitted ${json.data.autoSubmittedCount} active session(s).`
+          : "Exam started and is now live.";
+      setNotice(nextNotice);
+
+      await loadExams();
+
+      if (view === "monitoring" && selectedExamId === examId) {
+        await fetchMonitoring(examId);
+      }
+    } catch {
+      setError("Network error.");
+    } finally {
+      setLifecycleBusyKey(null);
+    }
   }
 
   function addQuestion() {
@@ -422,6 +485,12 @@ export default function LecturerPage() {
             </div>
           )}
 
+          {notice && (
+            <div className="mb-6 border-l-3 border-[var(--success)] bg-green-50 px-4 py-3 text-sm text-[var(--success)]">
+              {notice}
+            </div>
+          )}
+
           <div className="mb-8 flex flex-wrap items-center justify-between gap-4 animate-in">
             <h1 className="font-display text-2xl font-bold tracking-tight">Your Exams</h1>
             <button
@@ -486,8 +555,13 @@ export default function LecturerPage() {
             <div className="space-y-2 animate-in delay-2">
               {exams.map((exam) => {
                 const now = Date.now();
-                const isActive = now >= new Date(exam.startsAt).getTime() && now <= new Date(exam.endsAt).getTime();
-                const isEnded = now > new Date(exam.endsAt).getTime();
+                const startsAt = new Date(exam.startsAt).getTime();
+                const endsAt = new Date(exam.endsAt).getTime();
+                const isUpcoming = now < startsAt;
+                const isActive = now >= startsAt && now <= endsAt;
+                const isEnded = now > endsAt;
+                const startBusy = lifecycleBusyKey === `${exam.examId}:start`;
+                const endBusy = lifecycleBusyKey === `${exam.examId}:end`;
 
                 return (
                   <div
@@ -517,6 +591,34 @@ export default function LecturerPage() {
                       </p>
                     </div>
                     <div className="flex flex-wrap gap-1.5">
+                      <Link
+                        href={`/admin/exams/${exam.examId}`}
+                        className="border border-[var(--border)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
+                      >
+                        Manage
+                      </Link>
+                      {isUpcoming && (
+                        <button
+                          onClick={() => void handleExamLifecycle(exam.examId, "start")}
+                          disabled={Boolean(lifecycleBusyKey)}
+                          className="border border-[var(--border)] bg-[var(--accent)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--black)] hover:opacity-90 disabled:opacity-40 transition-colors"
+                        >
+                          {startBusy ? "Starting..." : "Start Now"}
+                        </button>
+                      )}
+                      {isActive && (
+                        <button
+                          onClick={() => {
+                            if (window.confirm("End exam now? All active candidates will be auto-submitted immediately.")) {
+                              void handleExamLifecycle(exam.examId, "end");
+                            }
+                          }}
+                          disabled={Boolean(lifecycleBusyKey)}
+                          className="border border-[var(--danger)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--danger)] hover:bg-red-50 disabled:opacity-40 transition-colors"
+                        >
+                          {endBusy ? "Ending..." : "End Now"}
+                        </button>
+                      )}
                       <button
                         onClick={() => {
                           const url = `${window.location.origin}/candidate`;
@@ -604,7 +706,7 @@ export default function LecturerPage() {
                   <input
                     ref={questionUploadInputRef}
                     type="file"
-                    accept=".pdf,.doc,.docx,.txt,.md"
+                    accept=".pdf,.docx,.txt,.md"
                     onChange={handleQuestionFileUpload}
                     className="hidden"
                   />

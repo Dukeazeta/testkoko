@@ -5,12 +5,13 @@ import { closeSeedResources, seedDatabase } from "../../prisma/seed";
 import { loginCandidate, validateSession } from "../../src/lib/server/auth-service";
 import { getExamRuntime, autosaveExamAnswer, finalizeSubmissionBySessionId, submitExam } from "../../src/lib/server/exam-runtime-service";
 import { ingestExamEvent } from "../../src/lib/server/exam-monitoring-service";
+import { updateExamLifecycle } from "../../src/lib/server/admin-exam-service";
 import { prisma } from "../../src/lib/server/prisma";
 
 
 describe("Reliability integration flows", () => {
   beforeEach(async () => {
-    await seedDatabase();
+    await seedDatabase({ reset: true });
   });
 
   afterAll(async () => {
@@ -45,6 +46,148 @@ describe("Reliability integration flows", () => {
 
     expect(validate.status).toBe(200);
     expect(validate.body.ok).toBe(true);
+  });
+
+  test("manual start opens exam before scheduled time", async () => {
+    const exam = await prisma.exam.findUnique({
+      where: {
+        accessCode: "MTH101-FEB26",
+      },
+      select: {
+        id: true,
+        lecturerId: true,
+      },
+    });
+
+    expect(exam).not.toBeNull();
+    if (!exam) {
+      return;
+    }
+
+    const now = Date.now();
+    await prisma.exam.update({
+      where: {
+        id: exam.id,
+      },
+      data: {
+        startsAt: new Date(now + 30 * 60 * 1000),
+        endsAt: new Date(now + 2 * 60 * 60 * 1000),
+      },
+    });
+
+    const blockedLogin = await loginCandidate(
+      {
+        examAccessCode: "MTH101-FEB26",
+        candidateId: "MAT-00123",
+        surname: "Adebayo",
+      },
+      {
+        clientIp: "127.0.0.1",
+        userAgent: "vitest",
+      },
+    );
+
+    expect(blockedLogin.status).toBe(403);
+    if (!blockedLogin.body.ok) {
+      expect(blockedLogin.body.error.code).toBe("EXAM_CLOSED");
+    }
+
+    const started = await updateExamLifecycle(exam.id, { action: "start" }, exam.lecturerId);
+    expect(started.status).toBe(200);
+    expect(started.body.ok).toBe(true);
+
+    const allowedLogin = await loginCandidate(
+      {
+        examAccessCode: "MTH101-FEB26",
+        candidateId: "MAT-00123",
+        surname: "Adebayo",
+      },
+      {
+        clientIp: "127.0.0.1",
+        userAgent: "vitest",
+      },
+    );
+
+    expect(allowedLogin.status).toBe(200);
+    expect(allowedLogin.body.ok).toBe(true);
+  });
+
+  test("manual end closes exam and auto-submits active sessions", async () => {
+    const exam = await prisma.exam.findUnique({
+      where: {
+        accessCode: "MTH101-FEB26",
+      },
+      select: {
+        id: true,
+        lecturerId: true,
+      },
+    });
+
+    expect(exam).not.toBeNull();
+    if (!exam) {
+      return;
+    }
+
+    const firstLogin = await loginCandidate(
+      {
+        examAccessCode: "MTH101-FEB26",
+        candidateId: "MAT-00123",
+        surname: "Adebayo",
+      },
+      {
+        clientIp: "127.0.0.1",
+        userAgent: "vitest",
+      },
+    );
+
+    const secondLogin = await loginCandidate(
+      {
+        examAccessCode: "MTH101-FEB26",
+        candidateId: "EXM-33012",
+        surname: "Okafor",
+      },
+      {
+        clientIp: "127.0.0.1",
+        userAgent: "vitest",
+      },
+    );
+
+    expect(firstLogin.status).toBe(200);
+    expect(secondLogin.status).toBe(200);
+
+    const ended = await updateExamLifecycle(exam.id, { action: "end" }, exam.lecturerId);
+    expect(ended.status).toBe(200);
+    if (!ended.body.ok) {
+      return;
+    }
+
+    expect(ended.body.data.autoSubmittedCount).toBeGreaterThanOrEqual(2);
+
+    const submissions = await prisma.submission.findMany({
+      where: {
+        examId: exam.id,
+      },
+    });
+
+    expect(submissions).toHaveLength(2);
+    expect(submissions.every((submission) => submission.mode === SubmissionMode.timeout)).toBe(true);
+
+    const blockedLogin = await loginCandidate(
+      {
+        examAccessCode: "MTH101-FEB26",
+        candidateId: "MAT-00123",
+        surname: "Adebayo",
+      },
+      {
+        clientIp: "127.0.0.1",
+        userAgent: "vitest",
+      },
+    );
+
+    expect(blockedLogin.status).toBe(403);
+    if (!blockedLogin.body.ok) {
+      expect(blockedLogin.body.error.code).toBe("EXAM_CLOSED");
+    }
   });
 
   test("autosave upserts answer without creating duplicates", async () => {

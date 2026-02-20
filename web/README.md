@@ -16,6 +16,12 @@ pnpm prisma:seed
 pnpm dev
 ```
 
+For a destructive local reset seed, run:
+
+```bash
+ALLOW_DESTRUCTIVE_SEED=true pnpm prisma:seed -- --reset
+```
+
 Open `http://localhost:3000`.
 Copy `.env.example` to `.env` before running Prisma commands.
 
@@ -189,9 +195,10 @@ Runs tests, lint, and production build in sequence.
 
 1. Set production env values from `.env.example`.
 2. Ensure `ADMIN_PASSWORD` is changed from the default.
-3. Run `pnpm prisma:migration:deploy` and `pnpm prisma:seed` in deployment environment.
-4. Run `pnpm verify` before releasing.
-5. Confirm `/api/health` returns status `ok` after deploy.
+3. Run `pnpm prisma:migration:deploy` in deployment environment.
+4. Do not run `pnpm prisma:seed -- --reset` in production unless you intentionally want to wipe and reseed data.
+5. Run `pnpm verify` before releasing.
+6. Confirm `/api/health` returns status `ok` after deploy.
 
 ## Next implementation targets
 

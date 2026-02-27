@@ -162,7 +162,7 @@ curl "http://localhost:3000/api/admin/monitoring?examId=exam-mth101"
 
 ## UI routes
 
-- Candidate test console: `http://localhost:3000/candidate`
+- Candidate login link format: `http://localhost:3000/exam/<EXAM-ACCESS-CODE>`
 - Admin live desk: `http://localhost:3000/admin`
 
 ## Reliability tests
@@ -205,3 +205,4 @@ Runs tests, lint, and production build in sequence.
 1. Add websocket transport option (beyond SSE) for high-volume monitoring
 2. Expand analytics depth (trend charts + institution-level drilldowns)
 3. Add advanced question variants and similarity adjudication workflows
+

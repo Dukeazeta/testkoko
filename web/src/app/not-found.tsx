@@ -1,33 +1,32 @@
 import Link from "next/link";
 
 export default function NotFound() {
-    return (
-        <div className="flex min-h-screen flex-col items-center justify-center bg-[var(--bg)] p-6 text-center">
-            <div className="animate-in">
-                <p className="font-mono text-[120px] font-bold leading-none text-[var(--bg-deep)]">
-                    404
-                </p>
-                <h1 className="font-display mt-2 text-2xl font-bold tracking-tight">
-                    Page not found
-                </h1>
-                <p className="mt-3 max-w-sm text-sm text-[var(--text-muted)]">
-                    The page you&apos;re looking for doesn&apos;t exist or has been moved.
-                </p>
-                <div className="mt-8 flex justify-center gap-3">
-                    <Link
-                        href="/"
-                        className="inline-flex bg-[var(--black)] px-6 py-3 text-[13px] font-bold uppercase tracking-wide text-[var(--accent)] hover:bg-[#1a1a1a] transition-colors"
-                    >
-                        Go Home
-                    </Link>
-                    <Link
-                        href="/admin"
-                        className="inline-flex border-2 border-[var(--border-strong)] px-6 py-3 text-[13px] font-bold uppercase tracking-wide text-[var(--text)] hover:border-[var(--black)] transition-colors"
-                    >
-                        Lecturer Sign In
-                    </Link>
-                </div>
-            </div>
-        </div>
-    );
+  return (
+    <div className="page justify-center fade-in">
+      <main className="shell flex items-center justify-center min-h-[70vh]">
+        <section className="flex flex-col items-center text-center max-w-md stagger-1">
+          <div className="w-20 h-20 bg-zinc-50 border border-zinc-200 rounded-3xl flex items-center justify-center mb-8 shadow-[inset_0_2px_10px_rgba(0,0,0,0.02)]">
+            <span className="text-zinc-400 font-mono text-2xl font-medium">404</span>
+          </div>
+
+          <h1 className="text-4xl tracking-tight font-medium text-zinc-950 mb-4">
+            Page not found
+          </h1>
+
+          <p className="text-zinc-500 text-base mb-10 leading-relaxed">
+            The page you are looking for doesn't exist or has been moved to another coordinate.
+          </p>
+
+          <div className="flex flex-col sm:flex-row gap-4 w-full sm:w-auto">
+            <Link className="btn btn-secondary w-full sm:w-auto px-8" href="/">
+              Return Home
+            </Link>
+            <Link className="btn btn-primary w-full sm:w-auto px-8" href="/admin">
+              Lecturer Portal
+            </Link>
+          </div>
+        </section>
+      </main>
+    </div>
+  );
 }

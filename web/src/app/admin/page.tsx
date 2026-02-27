@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface ExamSummary {
   examId: string;
@@ -12,7 +12,16 @@ interface ExamSummary {
   endsAt: string;
   candidateCount: number;
   questionCount: number;
-  createdAt: string;
+}
+
+interface MonitoringCandidate {
+  sessionId: string;
+  candidateId: string;
+  candidateName: string;
+  status: "Active" | "Disconnected" | "Flagged" | "Submitted";
+  strikes: number;
+  lastEventType: string | null;
+  submittedAt: string | null;
 }
 
 interface MonitoringData {
@@ -22,876 +31,588 @@ interface MonitoringData {
   disconnectedCount: number;
   flaggedCount: number;
   submittedCount: number;
-  candidates: Array<{
-    sessionId: string;
-    candidateId: string;
-    candidateName: string;
-    status: "Active" | "Disconnected" | "Flagged" | "Submitted";
-    strikes: number;
-    lastEventType: string | null;
-    submittedAt: string | null;
-  }>;
+  candidates: MonitoringCandidate[];
 }
 
-interface QuestionDraft {
-  prompt: string;
-  options: string[];
-  correctOptionIndex: number | null;
+type View = "auth" | "dashboard" | "create" | "monitoring";
+
+function formatDate(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) {
+    return "-";
+  }
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(date);
 }
 
-interface QuestionImportResponseData {
-  fileName: string;
-  importedCount: number;
-  issueCount: number;
-  issues: Array<{
-    question: string;
-    message: string;
-  }>;
-  questions: Array<{
-    prompt: string;
-    options: string[];
-    correctOption: string;
-  }>;
+function statusClass(status: MonitoringCandidate["status"]): string {
+  if (status === "Flagged") return "status-chip border-amber-200 bg-amber-50 text-amber-800";
+  if (status === "Disconnected") return "status-chip border-rose-200 bg-rose-50 text-rose-800";
+  if (status === "Submitted") return "status-chip border-emerald-200 bg-emerald-50 text-emerald-800";
+  return "status-chip border-blue-200 bg-blue-50 text-blue-800";
 }
 
-interface ExamLifecycleData {
-  action: "start" | "end";
-  autoSubmittedCount: number;
-  exam: ExamSummary;
-}
-
-type ApiResult<T> = { ok: true; data: T } | { ok: false; error: { message: string } };
-
-type View = "auth" | "signup" | "dashboard" | "create" | "monitoring";
-
-export default function LecturerPage() {
+export default function AdminPage() {
   const { data: session, status } = useSession();
+
   const [view, setView] = useState<View>("auth");
-  const [exams, setExams] = useState<ExamSummary[]>([]);
-  const [monitoring, setMonitoring] = useState<MonitoringData | null>(null);
-  const [selectedExamId, setSelectedExamId] = useState("");
+  const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [loading, setLoading] = useState(false);
-  const [lifecycleBusyKey, setLifecycleBusyKey] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const questionUploadInputRef = useRef<HTMLInputElement | null>(null);
 
+  const [authName, setAuthName] = useState("");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
-  const [authName, setAuthName] = useState("");
-  const [showAuthPassword, setShowAuthPassword] = useState(false);
 
-  const [examTitle, setExamTitle] = useState("");
-  const [examCode, setExamCode] = useState("");
-  const [examStartsAt, setExamStartsAt] = useState("");
-  const [examEndsAt, setExamEndsAt] = useState("");
-  const [rosterCsv, setRosterCsv] = useState("");
-  const [rosterExamId, setRosterExamId] = useState("");
-  const [rosterResult, setRosterResult] = useState("");
+  const [exams, setExams] = useState<ExamSummary[]>([]);
+  const [selectedExamId, setSelectedExamId] = useState("");
+  const [monitoring, setMonitoring] = useState<MonitoringData | null>(null);
 
-  const [questions, setQuestions] = useState<QuestionDraft[]>([]);
-  const [questionImportLoading, setQuestionImportLoading] = useState(false);
-  const [questionImportResult, setQuestionImportResult] = useState("");
+  const [newExamTitle, setNewExamTitle] = useState("");
+  const [newExamCode, setNewExamCode] = useState("");
+  const [startsAt, setStartsAt] = useState("");
+  const [endsAt, setEndsAt] = useState("");
+
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const clearFeedback = () => {
+    setError("");
+    setNotice("");
+  };
 
   const loadExams = useCallback(async () => {
-    setError("");
     try {
+      setLoading(true);
+      clearFeedback();
       const res = await fetch("/api/lecturer/exams");
-      const json: ApiResult<{ exams: ExamSummary[] }> = await res.json();
+      const json = await res.json();
+
       if (json.ok) {
         setExams(json.data.exams);
         return;
       }
 
-      setExams([]);
-      setError(json.error?.message || "Unable to load exams.");
-
       if (res.status === 401) {
         await signOut({ redirect: false });
         setView("auth");
+        return;
       }
+
+      setError(json.error?.message || "Could not load exams.");
     } catch {
-      setExams([]);
-      setError("Unable to load exams right now.");
+      setError("Could not load exams.");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
+  const fetchMonitoring = useCallback(async (examId: string) => {
+    try {
+      const res = await fetch(`/api/lecturer/exams/${examId}/monitoring`);
+      const json = await res.json();
+      if (json.ok) {
+        setMonitoring(json.data);
+      } else {
+        setError(json.error?.message || "Could not load monitoring data.");
+      }
+    } catch {
+      setError("Could not load monitoring data.");
+    }
+  }, []);
+
+  const openMonitoring = async (examId: string) => {
+    clearFeedback();
+    setSelectedExamId(examId);
+    setView("monitoring");
+    await fetchMonitoring(examId);
+
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+    }
+
+    pollRef.current = setInterval(() => {
+      void fetchMonitoring(examId);
+    }, 4000);
+  };
+
+  const copyCandidateLink = async (accessCode: string) => {
+    const path = `/exam/${encodeURIComponent(accessCode)}`;
+    const fullUrl = `${window.location.origin}${path}`;
+
+    try {
+      await navigator.clipboard.writeText(fullUrl);
+      setNotice(`Candidate link copied: ${path}`);
+      setError("");
+    } catch {
+      setError("Could not copy link.");
+    }
+  };
+
+  const downloadResults = async (examId: string) => {
+    try {
+      const res = await fetch(`/api/lecturer/exams/${examId}/results`);
+      if (!res.ok) {
+        setError("Could not download results.");
+        return;
+      }
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `results-${examId}.csv`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Could not download results.");
+    }
+  };
+
   useEffect(() => {
-    if (status === "authenticated") { setView("dashboard"); loadExams(); }
-    else if (status === "unauthenticated") { setView("auth"); }
+    if (status === "authenticated") {
+      setView("dashboard");
+      void loadExams();
+      return;
+    }
+
+    if (status === "unauthenticated") {
+      setView("auth");
+    }
   }, [status, loadExams]);
 
   useEffect(() => {
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+      }
+    };
   }, []);
 
-  async function handleSignIn(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
+  const handleSignIn = async (event: React.FormEvent) => {
+    event.preventDefault();
+    clearFeedback();
     setLoading(true);
-    const result = await signIn("credentials", { email: authEmail, password: authPassword, redirect: false });
-    setLoading(false);
-    if (result?.error) setError("Invalid email or password.");
-  }
 
-  async function handleSignUp(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
+    const result = await signIn("credentials", {
+      email: authEmail,
+      password: authPassword,
+      redirect: false,
+    });
+
+    setLoading(false);
+
+    if (result?.error) {
+      setError("Invalid email or password.");
+    }
+  };
+
+  const handleSignUp = async (event: React.FormEvent) => {
+    event.preventDefault();
+    clearFeedback();
     setLoading(true);
+
     try {
       const res = await fetch("/api/lecturer/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: authName, email: authEmail, password: authPassword }),
+        body: JSON.stringify({
+          name: authName,
+          email: authEmail,
+          password: authPassword,
+        }),
       });
-      const json = await res.json();
-      if (!json.ok) { setError(json.error?.message || "Signup failed."); setLoading(false); return; }
-      const result = await signIn("credentials", { email: authEmail, password: authPassword, redirect: false });
-      setLoading(false);
-      if (result?.error) { setError("Account created but sign-in failed. Try signing in manually."); setView("auth"); }
-    } catch { setError("Network error."); setLoading(false); }
-  }
 
-  async function handleCreateExam(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-    setNotice("");
+      const json = await res.json();
+
+      if (!json.ok) {
+        setError(json.error?.message || "Could not create account.");
+        return;
+      }
+
+      const signInResult = await signIn("credentials", {
+        email: authEmail,
+        password: authPassword,
+        redirect: false,
+      });
+
+      if (signInResult?.error) {
+        setError("Account created, but sign in failed.");
+      }
+    } catch {
+      setError("Could not create account.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleCreateExam = async (event: React.FormEvent) => {
+    event.preventDefault();
+    clearFeedback();
+
+    if (!startsAt || !endsAt) {
+      setError("Set start and end time.");
+      return;
+    }
+
+    const parsedStart = new Date(startsAt);
+    const parsedEnd = new Date(endsAt);
+
+    if (Number.isNaN(parsedStart.getTime()) || Number.isNaN(parsedEnd.getTime())) {
+      setError("Invalid date values.");
+      return;
+    }
+
     setLoading(true);
+
     try {
       const res = await fetch("/api/lecturer/exams", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          title: examTitle,
-          accessCode: examCode,
-          startsAt: new Date(examStartsAt).toISOString(),
-          endsAt: new Date(examEndsAt).toISOString(),
-          questions: questions.map((question) => ({
-            prompt: question.prompt,
-            options: question.options,
-            correctOption:
-              question.correctOptionIndex === null
-                ? ""
-                : (question.options[question.correctOptionIndex] ?? ""),
-          })),
+          title: newExamTitle,
+          accessCode: newExamCode,
+          startsAt: parsedStart.toISOString(),
+          endsAt: parsedEnd.toISOString(),
+          questions: [],
         }),
       });
+
       const json = await res.json();
-      setLoading(false);
-      if (!json.ok) { setError(json.error?.message || "Failed to create exam."); return; }
-      setExamTitle(""); setExamCode(""); setExamStartsAt(""); setExamEndsAt(""); setQuestions([]);
-      await loadExams();
+      if (!json.ok) {
+        setError(json.error?.message || "Could not create exam.");
+        return;
+      }
+
+      setNotice("Exam created.");
+      setNewExamTitle("");
+      setNewExamCode("");
+      setStartsAt("");
+      setEndsAt("");
       setView("dashboard");
-    } catch { setError("Network error."); setLoading(false); }
-  }
-
-  async function handleQuestionFileUpload(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    setError("");
-    setQuestionImportResult("");
-    setQuestionImportLoading(true);
-
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-
-      const res = await fetch("/api/lecturer/exams/questions/upload", {
-        method: "POST",
-        body: formData,
-      });
-
-      const json: ApiResult<QuestionImportResponseData> = await res.json();
-
-      if (!json.ok) {
-        setError(json.error?.message || "Question import failed.");
-        return;
-      }
-
-      const importedQuestions: QuestionDraft[] = json.data.questions.map((question) => {
-        const correctOptionIndex = question.options.findIndex((option) => option === question.correctOption);
-
-        return {
-          prompt: question.prompt,
-          options: question.options,
-          correctOptionIndex: correctOptionIndex >= 0 ? correctOptionIndex : null,
-        };
-      });
-
-      setQuestions((prev) => [...prev, ...importedQuestions]);
-
-      const issueText = json.data.issueCount > 0 ? ` ${json.data.issueCount} item(s) were skipped.` : "";
-      setQuestionImportResult(
-        `Imported ${json.data.importedCount} question(s) from ${json.data.fileName}.${issueText}`,
-      );
+      await loadExams();
     } catch {
-      setError("Question import failed.");
+      setError("Could not create exam.");
     } finally {
-      setQuestionImportLoading(false);
-      e.target.value = "";
-    }
-  }
-
-  async function handleUploadRoster(e: React.FormEvent) {
-    e.preventDefault();
-    setError("");
-    setNotice("");
-    setRosterResult("");
-    if (!rosterExamId || !rosterCsv.trim()) { setError("Select an exam and paste CSV data."); return; }
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/lecturer/exams/${rosterExamId}/roster`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ csv: rosterCsv }),
-      });
-      const json = await res.json();
       setLoading(false);
-      if (!json.ok) { setError(json.error?.message || "Upload failed."); return; }
-      setRosterResult(`Created: ${json.data.createdCount}, Updated: ${json.data.updatedCount}, Total: ${json.data.totalProcessed}`);
-      setRosterCsv("");
-      await loadExams();
-    } catch { setError("Network error."); setLoading(false); }
-  }
-
-  function openMonitoring(examId: string) {
-    setSelectedExamId(examId);
-    setView("monitoring");
-    fetchMonitoring(examId);
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = setInterval(() => fetchMonitoring(examId), 5000);
-  }
-
-  async function fetchMonitoring(examId: string) {
-    try {
-      const res = await fetch(`/api/lecturer/exams/${examId}/monitoring`);
-      const json: ApiResult<MonitoringData> = await res.json();
-      if (json.ok) setMonitoring(json.data);
-    } catch { /* silent */ }
-  }
-
-  async function downloadResults(examId: string) {
-    const res = await fetch(`/api/lecturer/exams/${examId}/results`);
-    if (!res.ok) return;
-    const blob = await res.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `results-${examId}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }
-
-  async function handleExamLifecycle(examId: string, action: "start" | "end") {
-    setError("");
-    setNotice("");
-    const busyKey = `${examId}:${action}`;
-    setLifecycleBusyKey(busyKey);
-
-    try {
-      const res = await fetch(`/api/lecturer/exams/${examId}/lifecycle`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action }),
-      });
-
-      const json: ApiResult<ExamLifecycleData> = await res.json();
-      if (!json.ok) {
-        setError(json.error?.message || "Failed to update exam lifecycle.");
-        await loadExams();
-        return;
-      }
-
-      const nextNotice =
-        action === "end"
-          ? `Exam ended. Auto-submitted ${json.data.autoSubmittedCount} active session(s).`
-          : "Exam started and is now live.";
-      setNotice(nextNotice);
-
-      await loadExams();
-
-      if (view === "monitoring" && selectedExamId === examId) {
-        await fetchMonitoring(examId);
-      }
-    } catch {
-      setError("Network error.");
-    } finally {
-      setLifecycleBusyKey(null);
     }
-  }
+  };
 
-  function addQuestion() {
-    setQuestions([...questions, { prompt: "", options: ["", "", "", ""], correctOptionIndex: null }]);
-  }
+  // ---------------------------------------------------------------------------
+  // RENDER
+  // ---------------------------------------------------------------------------
 
-  function updateQuestion(index: number, field: string, value: string) {
-    const updated = [...questions];
-    if (field === "prompt") updated[index].prompt = value;
-    setQuestions(updated);
-  }
-
-  function setCorrectOption(qIndex: number, oIndex: number) {
-    const updated = [...questions];
-    updated[qIndex].correctOptionIndex = oIndex;
-    setQuestions(updated);
-  }
-
-  function updateOption(qIndex: number, oIndex: number, value: string) {
-    const updated = [...questions];
-    updated[qIndex].options[oIndex] = value;
-
-    if (updated[qIndex].correctOptionIndex === oIndex && value.trim().length === 0) {
-      updated[qIndex].correctOptionIndex = null;
-    }
-
-    setQuestions(updated);
-  }
-
-  function removeQuestion(index: number) {
-    setQuestions(questions.filter((_, i) => i !== index));
-  }
-
-  // Loading
   if (status === "loading") {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[var(--bg)]">
-        <p className="font-mono text-sm text-[var(--text-soft)]">Loading...</p>
-      </div>
-    );
-  }
-
-  // ── Auth / Signup ──
-  if (view === "auth" || view === "signup") {
-    return (
-      <div className="flex min-h-screen flex-col items-center justify-center bg-[var(--bg)] p-6">
-        <div className="w-full max-w-sm animate-in">
-          <div className="mb-10 text-center">
-            <div className="mx-auto flex h-10 w-10 items-center justify-center bg-[var(--black)] font-mono text-[10px] font-bold text-[var(--accent)]">
-              TK
-            </div>
-            <h1 className="font-display mt-5 text-2xl font-bold tracking-tight">
-              {view === "signup" ? "Create Account" : "Lecturer Sign In"}
-            </h1>
-            <p className="mt-2 text-sm text-[var(--text-muted)]">
-              {view === "signup" ? "Sign up to create and manage exams." : "Sign in to manage your exams."}
-            </p>
-          </div>
-
-          {error && (
-            <div className="mb-5 border-l-3 border-[var(--danger)] bg-red-50 px-4 py-3 text-sm text-[var(--danger)]">
-              {error}
-            </div>
-          )}
-
-          <form onSubmit={view === "signup" ? handleSignUp : handleSignIn} className="space-y-4">
-            {view === "signup" && (
-              <div>
-                <label className="ui-label">Full Name</label>
-                <input
-                  type="text"
-                  value={authName}
-                  onChange={(e) => setAuthName(e.target.value)}
-                  className="ui-input"
-                  required
-                />
-              </div>
-            )}
-            <div>
-              <label className="ui-label">Email</label>
-              <input
-                type="email"
-                value={authEmail}
-                onChange={(e) => setAuthEmail(e.target.value)}
-                className="ui-input"
-                required
-              />
-            </div>
-            <div>
-              <label className="ui-label">Password</label>
-              <div className="relative">
-                <input
-                  type={showAuthPassword ? "text" : "password"}
-                  value={authPassword}
-                  onChange={(e) => setAuthPassword(e.target.value)}
-                  className="ui-input pr-16"
-                  required
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowAuthPassword((value) => !value)}
-                  className="absolute inset-y-0 right-0 px-3 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text)]"
-                >
-                  {showAuthPassword ? "Hide" : "Show"}
-                </button>
-              </div>
-            </div>
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-[var(--black)] py-3 text-[13px] font-bold uppercase tracking-wide text-[var(--accent)] hover:bg-[#1a1a1a] disabled:opacity-40 transition-colors"
-            >
-              {loading ? "Loading..." : view === "signup" ? "Create Account" : "Sign In"}
-            </button>
-          </form>
-
-          <p className="mt-6 text-center text-sm text-[var(--text-muted)]">
-            {view === "signup" ? (
-              <>Already have an account?{" "}<button onClick={() => { setView("auth"); setError(""); }} className="font-semibold text-[var(--text)] underline underline-offset-2">Sign in</button></>
-            ) : (
-              <>Don&apos;t have an account?{" "}<button onClick={() => { setView("signup"); setError(""); }} className="font-semibold text-[var(--text)] underline underline-offset-2">Sign up</button></>
-            )}
-          </p>
-
-          <div className="mt-4 text-center">
-            <Link href="/" className="font-mono text-xs text-[var(--text-soft)] hover:text-[var(--text)] transition-colors">
-              ← Back to home
-            </Link>
-          </div>
+      <div className="page justify-center items-center">
+        <div className="animate-pulse flex items-center gap-2 text-zinc-400 font-medium">
+          <div className="w-2 h-2 rounded-full bg-blue-500"></div> System booting...
         </div>
       </div>
     );
   }
 
-  // ── Dashboard ──
-  if (view === "dashboard") {
+  if (view === "auth") {
     return (
-      <div className="min-h-screen bg-[var(--bg)]">
-        <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[var(--bg)]/95 backdrop-blur-sm">
-          <div className="ui-shell flex h-14 items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="flex h-7 w-7 items-center justify-center bg-[var(--black)] font-mono text-[8px] font-bold text-[var(--accent)]">TK</div>
-              <span className="font-display text-sm font-bold tracking-tight">Dashboard</span>
-            </div>
-            <div className="flex items-center gap-3">
-              <span className="font-mono text-xs text-[var(--text-soft)]">{session?.user?.name}</span>
-              <button
-                onClick={() => signOut({ callbackUrl: "/admin" })}
-                className="border border-[var(--border)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
-              >
-                Sign Out
-              </button>
-            </div>
-          </div>
-        </header>
+      <div className="page justify-center">
+        <main className="shell relative z-10">
+          <section className="bg-white border border-zinc-200 p-8 md:p-12 rounded-[2rem] max-w-[460px] mx-auto shadow-[0_20px_40px_-15px_rgba(0,0,0,0.05)] stagger-1 fade-in">
+            <div className="stack gap-8">
+              <div className="text-center stack gap-2 items-center">
+                <div className="w-10 h-10 bg-zinc-950 rounded-xl flex items-center justify-center shadow-lg mb-2">
+                  <div className="w-3 h-3 bg-blue-600 rounded-full"></div>
+                </div>
+                <h1 className="text-2xl tracking-tight font-semibold text-zinc-950">Lecturer Portal</h1>
+                <p className="muted text-sm">Sign in to manage your exams and candidates.</p>
+              </div>
 
-        <main className="ui-shell py-8">
-          {error && (
-            <div className="mb-6 border-l-3 border-[var(--danger)] bg-red-50 px-4 py-3 text-sm text-[var(--danger)]">
-              {error}
-            </div>
-          )}
-
-          {notice && (
-            <div className="mb-6 border-l-3 border-[var(--success)] bg-green-50 px-4 py-3 text-sm text-[var(--success)]">
-              {notice}
-            </div>
-          )}
-
-          <div className="mb-8 flex flex-wrap items-center justify-between gap-4 animate-in">
-            <h1 className="font-display text-2xl font-bold tracking-tight">Your Exams</h1>
-            <button
-              onClick={() => { setView("create"); setError(""); }}
-              className="bg-[var(--black)] px-5 py-2.5 text-[13px] font-bold uppercase tracking-wide text-[var(--accent)] hover:bg-[#1a1a1a] transition-colors"
-            >
-              + Create Exam
-            </button>
-          </div>
-
-          {/* Roster upload */}
-          <details className="mb-8 border border-[var(--border)] bg-[var(--surface)] animate-in delay-1">
-            <summary className="cursor-pointer px-5 py-3 font-mono text-xs font-semibold uppercase tracking-wider text-[var(--text-muted)]">
-              Upload Student Roster (CSV)
-            </summary>
-            <form onSubmit={handleUploadRoster} className="space-y-3 border-t border-[var(--border)] p-5">
-              <div>
-                <label className="ui-label">Select Exam</label>
-                <select
-                  value={rosterExamId}
-                  onChange={(e) => setRosterExamId(e.target.value)}
-                  className="ui-input"
+              <div className="bg-zinc-100 p-1 flex rounded-xl">
+                <button
+                  className={`flex-1 text-sm font-medium py-2 rounded-lg transition-all ${authMode === "signin" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"}`}
+                  onClick={() => setAuthMode("signin")}
                 >
-                  <option value="">-- Select --</option>
-                  {exams.map((ex) => (
-                    <option key={ex.examId} value={ex.examId}>
-                      {ex.title} ({ex.accessCode})
-                    </option>
-                  ))}
-                </select>
+                  Sign In
+                </button>
+                <button
+                  className={`flex-1 text-sm font-medium py-2 rounded-lg transition-all ${authMode === "signup" ? "bg-white text-zinc-950 shadow-sm" : "text-zinc-500 hover:text-zinc-900"}`}
+                  onClick={() => setAuthMode("signup")}
+                >
+                  Create Account
+                </button>
               </div>
-              <div>
-                <label className="ui-label">CSV Data</label>
-                <textarea
-                  value={rosterCsv}
-                  onChange={(e) => setRosterCsv(e.target.value)}
-                  rows={4}
-                  placeholder={"candidateId,surname,displayName\nCSC/2020/001,Doe,John Doe"}
-                  className="ui-input font-mono !h-auto p-3 text-xs"
-                  style={{ minHeight: "100px" }}
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={loading}
-                className="bg-[var(--black)] px-5 py-2 text-[12px] font-bold uppercase tracking-wider text-[var(--accent)] hover:bg-[#1a1a1a] disabled:opacity-40 transition-colors"
-              >
-                {loading ? "Uploading..." : "Upload Roster"}
-              </button>
-              {rosterResult && (
-                <p className="font-mono text-xs text-[var(--success)]">{rosterResult}</p>
-              )}
-            </form>
-          </details>
 
-          {/* Exam list */}
-          {exams.length === 0 ? (
-            <div className="border border-dashed border-[var(--border)] p-12 text-center animate-in delay-2">
-              <p className="font-mono text-xs text-[var(--text-soft)]">No exams yet. Create your first exam to get started.</p>
-            </div>
-          ) : (
-            <div className="space-y-2 animate-in delay-2">
-              {exams.map((exam) => {
-                const now = Date.now();
-                const startsAt = new Date(exam.startsAt).getTime();
-                const endsAt = new Date(exam.endsAt).getTime();
-                const isUpcoming = now < startsAt;
-                const isActive = now >= startsAt && now <= endsAt;
-                const isEnded = now > endsAt;
-                const startBusy = lifecycleBusyKey === `${exam.examId}:start`;
-                const endBusy = lifecycleBusyKey === `${exam.examId}:end`;
+              {error ? <div className="p-3 bg-red-50 border border-red-200 text-red-600 rounded-xl text-sm font-medium">{error}</div> : null}
 
-                return (
-                  <div
-                    key={exam.examId}
-                    className="flex flex-col gap-3 border border-[var(--border)] bg-[var(--surface)] p-4 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-display text-sm font-bold">{exam.title}</h3>
-                        {isActive && (
-                          <span className="bg-[var(--accent)] px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-[var(--black)]">
-                            Live
-                          </span>
-                        )}
-                        {isEnded && (
-                          <span className="bg-[var(--bg-deep)] px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-[var(--text-soft)]">
-                            Ended
-                          </span>
-                        )}
-                      </div>
-                      <p className="mt-1 font-mono text-[11px] text-[var(--text-soft)]">
-                        Code: <span className="font-semibold text-[var(--text)]">{exam.accessCode}</span>
-                        {" · "}{exam.candidateCount} students{" · "}{exam.questionCount} questions
-                      </p>
-                      <p className="mt-0.5 font-mono text-[10px] text-[var(--text-soft)]">
-                        {new Date(exam.startsAt).toLocaleString()} — {new Date(exam.endsAt).toLocaleString()}
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      <Link
-                        href={`/admin/exams/${exam.examId}`}
-                        className="border border-[var(--border)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
-                      >
-                        Manage
-                      </Link>
-                      {isUpcoming && (
-                        <button
-                          onClick={() => void handleExamLifecycle(exam.examId, "start")}
-                          disabled={Boolean(lifecycleBusyKey)}
-                          className="border border-[var(--border)] bg-[var(--accent)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--black)] hover:opacity-90 disabled:opacity-40 transition-colors"
-                        >
-                          {startBusy ? "Starting..." : "Start Now"}
-                        </button>
-                      )}
-                      {isActive && (
-                        <button
-                          onClick={() => {
-                            if (window.confirm("End exam now? All active candidates will be auto-submitted immediately.")) {
-                              void handleExamLifecycle(exam.examId, "end");
-                            }
-                          }}
-                          disabled={Boolean(lifecycleBusyKey)}
-                          className="border border-[var(--danger)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--danger)] hover:bg-red-50 disabled:opacity-40 transition-colors"
-                        >
-                          {endBusy ? "Ending..." : "End Now"}
-                        </button>
-                      )}
-                      <button
-                        onClick={() => {
-                          const url = `${window.location.origin}/candidate`;
-                          const text = `Exam: ${exam.title}\nAccess Code: ${exam.accessCode}\nLink: ${url}\n\nUse the access code above to sign in.`;
-                          navigator.clipboard.writeText(text).then(() => {
-                            alert("Exam details copied to clipboard!");
-                          });
-                        }}
-                        className="border border-[var(--border)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
-                      >
-                        Share
-                      </button>
-                      <button
-                        onClick={() => openMonitoring(exam.examId)}
-                        className="border border-[var(--border)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
-                      >
-                        Monitor
-                      </button>
-                      <button
-                        onClick={() => downloadResults(exam.examId)}
-                        className="border border-[var(--border)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
-                      >
-                        Export
-                      </button>
-                    </div>
+              <form onSubmit={authMode === "signin" ? handleSignIn : handleSignUp} className="stack gap-5">
+                {authMode === "signup" ? (
+                  <div className="stack gap-1.5">
+                    <label className="label">Name</label>
+                    <input className="field" placeholder="Dr. Jane Doe" value={authName} onChange={(event) => setAuthName(event.target.value)} required />
                   </div>
-                );
-              })}
+                ) : null}
+
+                <div className="stack gap-1.5">
+                  <label className="label">Email Address</label>
+                  <input className="field" type="email" placeholder="lecturer@university.edu" value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} required />
+                </div>
+
+                <div className="stack gap-1.5">
+                  <label className="label">Password</label>
+                  <input className="field" type="password" value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} required />
+                </div>
+
+                <button className="btn btn-primary w-full mt-2" disabled={loading} type="submit">
+                  {loading ? "Authenticating..." : authMode === "signin" ? "Access Portal" : "Create Account"}
+                </button>
+              </form>
             </div>
-          )}
+          </section>
         </main>
       </div>
     );
   }
 
-  // ── Create Exam ──
-  if (view === "create") {
-    return (
-      <div className="min-h-screen bg-[var(--bg)]">
-        <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[var(--bg)]/95 backdrop-blur-sm">
-          <div className="ui-shell flex h-14 items-center gap-3">
-            <button
-              onClick={() => { setView("dashboard"); setError(""); }}
-              className="font-mono text-xs text-[var(--text-soft)] hover:text-[var(--text)] transition-colors"
-            >
-              ← Back
+  return (
+    <div className="page bg-zinc-50/50">
+      <main className="shell stack gap-8 py-8">
+        {/* Header */}
+        <header className="flex flex-col md:flex-row md:items-center md:justify-between gap-6 stagger-1 fade-in">
+          <div className="flex items-center gap-4">
+            <div className="w-10 h-10 bg-zinc-950 rounded-[10px] flex items-center justify-center shadow-sm">
+              <div className="w-2.5 h-2.5 bg-blue-600 rounded-full"></div>
+            </div>
+            <div>
+              <h1 className="text-xl tracking-tight font-semibold text-zinc-950">Lecturer Control</h1>
+              <p className="muted text-[0.85rem]">{session?.user?.email}</p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            {view === "dashboard" ? (
+              <button className="btn btn-primary" onClick={() => setView("create")}>
+                + New Exam
+              </button>
+            ) : null}
+            <button className="text-sm font-medium text-zinc-500 hover:text-zinc-900 transition-colors" onClick={() => signOut({ callbackUrl: "/admin" })}>
+              Log out
             </button>
-            <span className="font-display text-sm font-bold tracking-tight">Create Exam</span>
           </div>
         </header>
 
-        <main className="ui-shell max-w-2xl py-8">
-          {error && (
-            <div className="mb-6 border-l-3 border-[var(--danger)] bg-red-50 px-4 py-3 text-sm text-[var(--danger)]">{error}</div>
-          )}
+        {error ? <div className="p-4 bg-red-50 border border-red-200 text-red-700 rounded-xl text-sm font-medium shadow-sm">{error}</div> : null}
+        {notice ? <div className="p-4 bg-blue-50 border border-blue-200 text-blue-700 rounded-xl text-sm font-medium shadow-sm">{notice}</div> : null}
 
-          <form onSubmit={handleCreateExam} className="space-y-5 animate-in">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="ui-label">Exam Title</label>
-                <input type="text" value={examTitle} onChange={(e) => setExamTitle(e.target.value)} className="ui-input" required />
-              </div>
-              <div>
-                <label className="ui-label">Access Code</label>
-                <input type="text" value={examCode} onChange={(e) => setExamCode(e.target.value)} placeholder="e.g. MTH101" className="ui-input font-mono" required />
-              </div>
+        {/* Create View */}
+        {view === "create" ? (
+          <section className="bg-white border border-zinc-200 rounded-[2rem] p-8 md:p-10 shadow-[0_10px_30px_-15px_rgba(0,0,0,0.05)] stagger-2 fade-in max-w-3xl">
+            <div className="mb-8">
+              <h2 className="text-2xl tracking-tight font-medium text-zinc-950">Draft New Exam</h2>
+              <p className="text-zinc-500 text-sm mt-1">Configure the core details before adding questions.</p>
             </div>
 
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="ui-label">Starts At</label>
-                <input type="datetime-local" value={examStartsAt} onChange={(e) => setExamStartsAt(e.target.value)} className="ui-input" required />
+            <form onSubmit={handleCreateExam} className="stack gap-6">
+              <div className="stack gap-1.5">
+                <label className="label">Exam Title</label>
+                <input className="field" placeholder="e.g. Advanced Mathematics 101" value={newExamTitle} onChange={(event) => setNewExamTitle(event.target.value)} required />
               </div>
-              <div>
-                <label className="ui-label">Ends At</label>
-                <input type="datetime-local" value={examEndsAt} onChange={(e) => setExamEndsAt(e.target.value)} className="ui-input" required />
-              </div>
-            </div>
 
-            {/* Questions */}
-            <div>
-              <div className="mb-3 flex items-center justify-between">
-                <label className="ui-label !mb-0">Questions ({questions.length})</label>
-                <div className="flex items-center gap-2">
+              <div className="stack gap-1.5">
+                <label className="label">Candidate Access Code</label>
+                <div className="relative">
                   <input
-                    ref={questionUploadInputRef}
-                    type="file"
-                    accept=".pdf,.docx,.txt,.md"
-                    onChange={handleQuestionFileUpload}
-                    className="hidden"
+                    className="field uppercase pr-24 font-mono font-medium"
+                    placeholder="e.g. MATH-MIDTERM"
+                    value={newExamCode}
+                    onChange={(event) => setNewExamCode(event.target.value.toUpperCase())}
+                    required
                   />
-                  <button
-                    type="button"
-                    onClick={() => questionUploadInputRef.current?.click()}
-                    disabled={questionImportLoading}
-                    className="border border-[var(--border)] px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] disabled:opacity-40 transition-colors"
-                  >
-                    {questionImportLoading ? "Importing..." : "Upload PDF/DOCX"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={addQuestion}
-                    className="border border-[var(--border)] px-3 py-1 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
-                  >
-                    + Add
-                  </button>
+                  <div className="absolute right-3 top-1/2 -translate-y-1/2 text-[0.65rem] font-bold tracking-wider text-zinc-400 uppercase pointer-events-none">Must be unique</div>
                 </div>
               </div>
 
-              <p className="mb-3 font-mono text-[10px] text-[var(--text-soft)]">
-                For auto-import, format each question with options A-D and include an answer line like: Answer: B
-              </p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 pt-2 border-t border-zinc-100">
+                <div className="stack gap-1.5">
+                  <label className="label">Opening Time</label>
+                  <input className="field text-sm" type="datetime-local" value={startsAt} onChange={(event) => setStartsAt(event.target.value)} required />
+                </div>
+                <div className="stack gap-1.5">
+                  <label className="label">Closing Time</label>
+                  <input className="field text-sm" type="datetime-local" value={endsAt} onChange={(event) => setEndsAt(event.target.value)} required />
+                </div>
+              </div>
 
-              {questionImportResult && (
-                <p className="mb-3 font-mono text-xs text-[var(--success)]">{questionImportResult}</p>
-              )}
+              <div className="flex items-center gap-3 pt-4">
+                <button className="btn btn-primary" type="submit" disabled={loading}>
+                  {loading ? "Generating..." : "Create Exam"}
+                </button>
+                <button className="btn btn-secondary px-6" type="button" onClick={() => setView("dashboard")}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          </section>
+        ) : null}
 
-              <div className="space-y-3">
-                {questions.map((q, qi) => (
-                  <div key={qi} className="border border-[var(--border)] bg-[var(--surface)] p-4">
-                    <div className="mb-3 flex items-center justify-between">
-                      <span className="font-mono text-[10px] font-bold uppercase tracking-wider text-[var(--text-soft)]">Q{qi + 1}</span>
-                      <button type="button" onClick={() => removeQuestion(qi)} className="font-mono text-[10px] text-[var(--danger)] hover:underline">
-                        Remove
+        {/* Dashboard View */}
+        {view === "dashboard" ? (
+          <section className="stack gap-6 w-full stagger-2 fade-in">
+            {loading ? <div className="animate-pulse h-64 bg-zinc-100 rounded-[2rem]"></div> : null}
+
+            {exams.length === 0 && !loading ? (
+              <div className="empty-state">
+                <div className="w-16 h-16 bg-white border border-zinc-200 rounded-2xl flex items-center justify-center shadow-sm mx-auto mb-4">
+                  <svg className="w-6 h-6 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"></path></svg>
+                </div>
+                <h3 className="text-zinc-900 font-medium mb-1">No active exams</h3>
+                <p className="text-zinc-500 text-sm mb-6">Create your first examination to get started.</p>
+                <button className="btn btn-primary" onClick={() => setView("create")}>+ New Exam</button>
+              </div>
+            ) : null}
+
+            <div className="grid grid-cols-1 gap-6">
+              {exams.map((exam) => (
+                <article className="surface p-0 flex flex-col md:flex-row overflow-hidden group hover:border-zinc-300 transition-colors" key={exam.examId}>
+
+                  {/* Main Info */}
+                  <div className="p-6 md:p-8 flex-1 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center gap-3 mb-3">
+                        <span className="text-[0.65rem] font-bold tracking-widest uppercase text-blue-600 bg-blue-50 px-2 py-1 rounded-md">{exam.accessCode}</span>
+                        <span className="text-[0.75rem] font-medium text-zinc-400">{formatDate(exam.startsAt)}</span>
+                      </div>
+                      <h2 className="text-2xl tracking-tight font-medium text-zinc-950 mb-2">{exam.title}</h2>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 mt-8">
+                      <Link className="btn btn-primary" href={`/admin/exams/${exam.examId}`}>Edit Questions</Link>
+                      <button className="btn btn-secondary" onClick={() => void openMonitoring(exam.examId)}>Live Monitoring</button>
+                      <button className="btn btn-secondary" onClick={() => void copyCandidateLink(exam.accessCode)}>Copy Link</button>
+                      <button className="btn btn-secondary text-zinc-500 hover:text-zinc-900" onClick={() => void downloadResults(exam.examId)}>
+                        CSV Export
                       </button>
                     </div>
-                    <input
-                      type="text"
-                      value={q.prompt}
-                      onChange={(e) => updateQuestion(qi, "prompt", e.target.value)}
-                      placeholder="Question prompt"
-                      className="ui-input mb-3"
-                    />
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {q.options.map((opt, oi) => (
-                        <div key={oi} className="flex items-center gap-2">
-                          <input
-                            type="radio"
-                            name={`correct-${qi}`}
-                            checked={q.correctOptionIndex === oi}
-                            onChange={() => setCorrectOption(qi, oi)}
-                            className="h-3.5 w-3.5 accent-[var(--black)]"
-                          />
-                          <input
-                            type="text"
-                            value={opt}
-                            onChange={(e) => updateOption(qi, oi, e.target.value)}
-                            placeholder={`Option ${String.fromCharCode(65 + oi)}`}
-                            className="ui-input !h-9 text-xs"
-                          />
-                        </div>
-                      ))}
+                  </div>
+
+                  {/* KPIs Sidebar */}
+                  <div className="bg-zinc-50 border-t md:border-t-0 md:border-l border-zinc-200 p-6 md:p-8 flex md:flex-col justify-center gap-8 md:w-[220px]">
+                    <div>
+                      <p className="text-3xl font-medium tracking-tight text-zinc-950">{exam.candidateCount}</p>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mt-1">Candidates</p>
+                    </div>
+                    <div>
+                      <p className="text-3xl font-medium tracking-tight text-zinc-950">{exam.questionCount}</p>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-zinc-500 mt-1">Questions</p>
                     </div>
                   </div>
-                ))}
+                </article>
+              ))}
+            </div>
+          </section>
+        ) : null}
+
+        {/* Monitoring View */}
+        {view === "monitoring" ? (
+          <section className="stack gap-6 stagger-2 fade-in">
+            {/* Monitoring Header */}
+            <div className="surface flex flex-col md:flex-row items-start md:items-center justify-between p-6 md:p-8 gap-6">
+              <div>
+                <div className="flex items-center gap-3 mb-2">
+                  <span className="relative flex h-3 w-3">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                  </span>
+                  <p className="text-[0.7rem] font-bold uppercase tracking-widest text-red-500">Live Session</p>
+                </div>
+                <h2 className="text-2xl tracking-tight font-medium text-zinc-950">{monitoring?.title ?? "Loading..."}</h2>
+              </div>
+              <div className="flex gap-2 w-full md:w-auto">
+                <button className="btn btn-secondary w-full md:w-auto" onClick={() => selectedExamId && void fetchMonitoring(selectedExamId)}>
+                  Refresh Pulse
+                </button>
+                <button
+                  className="btn btn-secondary text-zinc-500 w-full md:w-auto"
+                  onClick={() => {
+                    if (pollRef.current) {
+                      clearInterval(pollRef.current);
+                      pollRef.current = null;
+                    }
+                    setView("dashboard");
+                  }}
+                >
+                  Exit Monitor
+                </button>
               </div>
             </div>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="w-full bg-[var(--black)] py-3 text-[13px] font-bold uppercase tracking-wide text-[var(--accent)] hover:bg-[#1a1a1a] disabled:opacity-40 transition-colors"
-            >
-              {loading ? "Creating..." : "Create Exam"}
-            </button>
-          </form>
-        </main>
-      </div>
-    );
-  }
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="surface p-6 flex flex-col justify-center items-center text-center">
+                <p className="text-4xl font-light tracking-tighter text-blue-600">{monitoring?.activeCount ?? 0}</p>
+                <p className="text-[0.75rem] font-bold uppercase tracking-wider text-zinc-500 mt-2">Active</p>
+              </div>
+              <div className="surface p-6 flex flex-col justify-center items-center text-center">
+                <p className="text-4xl font-light tracking-tighter text-zinc-950">{monitoring?.submittedCount ?? 0}</p>
+                <p className="text-[0.75rem] font-bold uppercase tracking-wider text-zinc-500 mt-2">Submitted</p>
+              </div>
+              <div className="surface p-6 flex flex-col justify-center items-center text-center">
+                <p className="text-4xl font-light tracking-tighter text-rose-600">{monitoring?.disconnectedCount ?? 0}</p>
+                <p className="text-[0.75rem] font-bold uppercase tracking-wider text-zinc-500 mt-2">Offline</p>
+              </div>
+              <div className="surface p-6 flex flex-col justify-center items-center text-center">
+                <p className="text-4xl font-light tracking-tighter text-amber-500">{monitoring?.flaggedCount ?? 0}</p>
+                <p className="text-[0.75rem] font-bold uppercase tracking-wider text-zinc-500 mt-2">Flagged</p>
+              </div>
+            </div>
 
-  // ── Monitoring ──
-  if (view === "monitoring" && monitoring) {
-    return (
-      <div className="min-h-screen bg-[var(--bg)]">
-        <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-[var(--bg)]/95 backdrop-blur-sm">
-          <div className="ui-shell flex h-14 items-center gap-3">
-            <button
-              onClick={() => {
-                setView("dashboard");
-                setMonitoring(null);
-                if (pollRef.current) clearInterval(pollRef.current);
-              }}
-              className="font-mono text-xs text-[var(--text-soft)] hover:text-[var(--text)] transition-colors"
-            >
-              ← Back
-            </button>
-            <span className="font-display text-sm font-bold tracking-tight">{monitoring.title}</span>
-            <span className="bg-[var(--accent)] px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-[var(--black)]">
-              Live
-            </span>
-          </div>
-        </header>
-
-        <main className="ui-shell py-8">
-          <div className="mb-6 grid gap-px bg-[var(--border)] sm:grid-cols-4 animate-in">
-            <StatCard label="Active" value={monitoring.activeCount} />
-            <StatCard label="Flagged" value={monitoring.flaggedCount} accent />
-            <StatCard label="Offline" value={monitoring.disconnectedCount} />
-            <StatCard label="Submitted" value={monitoring.submittedCount} />
-          </div>
-
-          <div className="mb-4 flex items-center justify-between animate-in delay-1">
-            <h2 className="font-display text-lg font-bold">Candidates</h2>
-            <button
-              onClick={() => downloadResults(selectedExamId)}
-              className="border border-[var(--border)] px-3 py-1.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:border-[var(--black)] transition-colors"
-            >
-              Export CSV
-            </button>
-          </div>
-
-          <div className="overflow-x-auto border border-[var(--border)] animate-in delay-2">
-            <table className="w-full text-left text-sm">
-              <thead className="border-b border-[var(--border)] bg-[var(--bg-deep)]">
-                <tr>
-                  <th className="px-4 py-2.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-soft)]">Student</th>
-                  <th className="px-4 py-2.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-soft)]">Matric No.</th>
-                  <th className="px-4 py-2.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-soft)]">Status</th>
-                  <th className="px-4 py-2.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-soft)]">Strikes</th>
-                  <th className="px-4 py-2.5 font-mono text-[10px] font-semibold uppercase tracking-wider text-[var(--text-soft)]">Last Event</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[var(--border)]">
-                {monitoring.candidates.map((c) => (
-                  <tr key={c.sessionId} className="hover:bg-[var(--bg-deep)] transition-colors">
-                    <td className="px-4 py-2.5 text-sm">{c.candidateName}</td>
-                    <td className="px-4 py-2.5 font-mono text-xs">{c.candidateId}</td>
-                    <td className="px-4 py-2.5">
-                      <span
-                        className={`inline-block px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider ${c.status === "Active"
-                            ? "bg-[var(--accent)] text-[var(--black)]"
-                            : c.status === "Flagged"
-                              ? "bg-[var(--danger)] text-white"
-                              : c.status === "Submitted"
-                                ? "bg-[var(--bg-deep)] text-[var(--text)]"
-                                : "bg-[var(--bg-deep)] text-[var(--text-soft)]"
-                          }`}
-                      >
-                        {c.status}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 font-mono text-xs">{c.strikes}</td>
-                    <td className="px-4 py-2.5 font-mono text-[11px] text-[var(--text-soft)]">{c.lastEventType ?? "—"}</td>
-                  </tr>
-                ))}
-                {monitoring.candidates.length === 0 && (
+            <div className="table-wrap border-none shadow-[0_10px_30px_-15px_rgba(0,0,0,0.05)] rounded-[1.5rem] bg-white overflow-hidden">
+              <table className="min-w-full">
+                <thead className="bg-zinc-50/80 border-b border-zinc-200">
                   <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center font-mono text-xs text-[var(--text-soft)]">
-                      No candidates have joined yet.
-                    </td>
+                    <th className="py-4 px-6 font-semibold text-zinc-900 border-none">Candidate</th>
+                    <th className="py-4 px-6 font-semibold text-zinc-900 border-none">Status</th>
+                    <th className="py-4 px-6 font-semibold text-zinc-900 border-none text-center">Strikes</th>
+                    <th className="py-4 px-6 font-semibold text-zinc-900 border-none">Last Event</th>
+                    <th className="py-4 px-6 font-semibold text-zinc-900 border-none text-right">Completion Time</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  return null;
-}
-
-function StatCard({ label, value, accent }: { label: string; value: number; accent?: boolean }) {
-  return (
-    <div className={`p-5 ${accent ? "bg-[var(--black)]" : "bg-[var(--surface)]"}`}>
-      <p className={`font-mono text-3xl font-bold ${accent ? "text-[var(--accent)]" : "text-[var(--text)]"}`}>
-        {value}
-      </p>
-      <p className={`mt-1 font-mono text-[10px] uppercase tracking-wider ${accent ? "text-[var(--text-soft)]" : "text-[var(--text-soft)]"}`}>
-        {label}
-      </p>
+                </thead>
+                <tbody className="divide-y divide-zinc-100">
+                  {(monitoring?.candidates ?? []).map((candidate) => (
+                    <tr key={candidate.sessionId} className="hover:bg-zinc-50/50 transition-colors">
+                      <td className="py-4 px-6 border-none">
+                        <div className="font-medium text-zinc-900">{candidate.candidateName}</div>
+                        <div className="text-xs text-zinc-500 font-mono mt-0.5">{candidate.candidateId}</div>
+                      </td>
+                      <td className="py-4 px-6 border-none">
+                        <span className={statusClass(candidate.status)}>{candidate.status}</span>
+                      </td>
+                      <td className="py-4 px-6 border-none text-center">
+                        <span className={`inline-flex items-center justify-center w-6 h-6 rounded-md text-xs font-bold ${candidate.strikes > 0 ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-500'}`}>
+                          {candidate.strikes}
+                        </span>
+                      </td>
+                      <td className="py-4 px-6 border-none text-sm text-zinc-600 font-mono text-[0.8rem] bg-zinc-50/50 rounded-md">
+                        {candidate.lastEventType ?? "-"}
+                      </td>
+                      <td className="py-4 px-6 border-none text-sm text-zinc-500 text-right">
+                        {candidate.submittedAt ? formatDate(candidate.submittedAt) : "-"}
+                      </td>
+                    </tr>
+                  ))}
+                  {(monitoring?.candidates.length ?? 0) === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-12 border-none">
+                        <div className="text-center text-sm text-zinc-400">Waiting for candidates to join...</div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        ) : null}
+      </main>
     </div>
   );
 }

@@ -1,45 +1,43 @@
 import type { Metadata } from "next";
-import { Syne, Manrope, JetBrains_Mono } from "next/font/google";
-import "./globals.css";
+import { DM_Sans, IBM_Plex_Mono, Outfit } from "next/font/google";
+
 import Providers from "./providers";
+import "./globals.css";
 
-const syne = Syne({
+const outfit = Outfit({
   subsets: ["latin"],
-  variable: "--font-syne",
+  variable: "--font-outfit",
   display: "swap",
-  weight: ["400", "500", "600", "700", "800"],
+  weight: ["400", "500", "700"],
 });
 
-const manrope = Manrope({
+const dmSans = DM_Sans({
   subsets: ["latin"],
-  variable: "--font-manrope",
+  variable: "--font-dm-sans",
   display: "swap",
-  weight: ["400", "500", "600", "700"],
+  weight: ["400", "500"],
 });
 
-const jetbrains = JetBrains_Mono({
+const ibmPlexMono = IBM_Plex_Mono({
   subsets: ["latin"],
-  variable: "--font-jetbrains",
+  variable: "--font-ibm-plex",
   display: "swap",
-  weight: ["400", "500", "600", "700"],
+  weight: ["400", "500"],
 });
 
 export const metadata: Metadata = {
-  title: "TestKOKO — Secure CBT, Reinvented",
-  description:
-    "Browser-based examination platform with anti-cheat detection, live monitoring, and auto-grading. Built for institutions that demand integrity.",
+  title: "TestKOKO",
+  description: "Simple web exams for lecturers and candidates.",
   openGraph: {
-    title: "TestKOKO — Secure CBT, Reinvented",
-    description:
-      "Browser-based examination platform with anti-cheat detection.",
+    title: "TestKOKO",
+    description: "Simple web exams for lecturers and candidates.",
     siteName: "TestKOKO",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "TestKOKO — Secure CBT, Reinvented",
-    description:
-      "Browser-based examination platform with anti-cheat detection.",
+    title: "TestKOKO",
+    description: "Simple web exams for lecturers and candidates.",
   },
 };
 
@@ -49,8 +47,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className={`${syne.variable} ${manrope.variable} ${jetbrains.variable}`}>
-      <body className="app-body antialiased">
+    <html lang="en" className={`${outfit.variable} ${dmSans.variable} ${ibmPlexMono.variable}`}>
+      <body className="app-body antialiased selection:bg-black selection:text-white">
         <Providers>{children}</Providers>
       </body>
     </html>

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { signOut, useSession } from "next-auth/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -29,6 +29,7 @@ function toLocalDateInput(iso: string): string {
 export default function ExamDetailPage() {
   const { status } = useSession();
   const params = useParams<{ examId: string }>();
+  const router = useRouter();
   const examId = params.examId;
 
   const [loading, setLoading] = useState(true);
@@ -152,6 +153,29 @@ export default function ExamDetailPage() {
     } catch {
       setError("Could not save details.");
     } finally {
+      setSaving(null);
+    }
+  };
+
+  const handleDeleteExam = async () => {
+    if (!examId) return;
+    if (!confirm("Are you sure you want to delete this exam? This action cannot be undone.")) return;
+
+    try {
+      setSaving("details");
+      clearFeedback();
+      const res = await fetch(`/api/lecturer/exams/${examId}`, { method: "DELETE" });
+      const json = await res.json();
+
+      if (!json.ok) {
+        setError(json.error?.message || "Could not delete exam.");
+        setSaving(null);
+        return;
+      }
+
+      router.push("/admin");
+    } catch {
+      setError("Could not delete exam.");
       setSaving(null);
     }
   };
@@ -286,9 +310,14 @@ export default function ExamDetailPage() {
                 <h2 className="text-xl tracking-tight font-medium text-zinc-950">Basic Details</h2>
                 <p className="text-zinc-500 text-sm mt-1">Configure title, code, and active schedule.</p>
               </div>
-              <button className="btn btn-primary" onClick={() => void handleSaveDetails()} disabled={saving !== null}>
-                {saving === "details" ? "Saving..." : "Save Details"}
-              </button>
+              <div className="flex gap-2">
+                <button className="btn btn-secondary text-red-500 hover:text-red-700 hover:bg-red-50 border-zinc-200 hover:border-red-200" onClick={() => void handleDeleteExam()}>
+                  Delete Exam
+                </button>
+                <button className="btn btn-primary" onClick={() => void handleSaveDetails()} disabled={saving !== null}>
+                  {saving === "details" ? "Saving..." : "Save Details"}
+                </button>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
@@ -511,7 +540,7 @@ export default function ExamDetailPage() {
                       <td className="px-5 py-3">
                         <input
                           className="w-full bg-transparent border border-transparent focus:border-blue-500 rounded-md px-2 py-1.5 text-sm text-zinc-900 font-medium transition-all focus:bg-white outline-none"
-                          placeholder="Adebayo"
+                          placeholder="Smith"
                           value={student.surname}
                           onChange={(event) =>
                             setStudents((prev) =>
@@ -525,7 +554,7 @@ export default function ExamDetailPage() {
                       <td className="px-5 py-3">
                         <input
                           className="w-full bg-transparent border border-transparent focus:border-blue-500 rounded-md px-2 py-1.5 text-sm text-zinc-900 transition-all focus:bg-white outline-none"
-                          placeholder="John Adebayo"
+                          placeholder="John Smith"
                           value={student.displayName}
                           onChange={(event) =>
                             setStudents((prev) =>

@@ -173,6 +173,55 @@ export default function AdminPage() {
     }
   };
 
+  const handleDeleteExam = async (examId: string) => {
+    if (!confirm("Are you sure you want to delete this exam? This action cannot be undone.")) return;
+
+    setLoading(true);
+    clearFeedback();
+    try {
+      const res = await fetch(`/api/lecturer/exams/${examId}`, { method: "DELETE" });
+      const json = await res.json();
+
+      if (!json.ok) {
+        setError(json.error?.message || "Could not delete exam.");
+      } else {
+        setNotice("Exam deleted successfully.");
+        await loadExams();
+      }
+    } catch {
+      setError("Could not delete exam.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleToggleExamState = async (examId: string, action: "start" | "end") => {
+    if (action === "end" && !confirm("Are you sure you want to forcibly END this exam now? This will submit all active sessions.")) return;
+
+    setLoading(true);
+    clearFeedback();
+
+    try {
+      const res = await fetch(`/api/lecturer/exams/${examId}/lifecycle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action }),
+      });
+      const json = await res.json();
+
+      if (!json.ok) {
+        setError(json.error?.message || `Could not ${action} exam.`);
+      } else {
+        setNotice(`Exam ${action === "start" ? "started" : "ended"} successfully.`);
+        await loadExams();
+      }
+    } catch {
+      setError(`Could not ${action} exam.`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (status === "authenticated") {
       setView("dashboard");
@@ -492,6 +541,24 @@ export default function AdminPage() {
                       <button className="btn btn-secondary" onClick={() => void copyCandidateLink(exam.accessCode)}>Copy Link</button>
                       <button className="btn btn-secondary text-zinc-500 hover:text-zinc-900" onClick={() => void downloadResults(exam.examId)}>
                         CSV Export
+                      </button>
+
+                      {new Date(exam.startsAt) > new Date() ? (
+                        <button className="btn btn-secondary text-emerald-600 hover:bg-emerald-50 border-emerald-200" onClick={() => void handleToggleExamState(exam.examId, "start")}>
+                          Force Start
+                        </button>
+                      ) : new Date(exam.endsAt) > new Date() ? (
+                        <button className="btn btn-secondary text-amber-600 hover:bg-amber-50 border-amber-200" onClick={() => void handleToggleExamState(exam.examId, "end")}>
+                          Force End
+                        </button>
+                      ) : (
+                        <button className="btn btn-secondary text-zinc-400 border-zinc-200" disabled>
+                          Ended
+                        </button>
+                      )}
+
+                      <button className="btn btn-secondary text-red-500 hover:text-red-700 hover:bg-red-50 border-transparent hover:border-red-200 ml-auto" onClick={() => void handleDeleteExam(exam.examId)}>
+                        Delete
                       </button>
                     </div>
                   </div>

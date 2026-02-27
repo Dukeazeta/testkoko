@@ -213,7 +213,7 @@ function normalizeQuestions(
 }
 
 function canEditExamContent(examStartsAt: Date): boolean {
-  return Date.now() < examStartsAt.getTime();
+  return true; // The user requested to allow editing at any time.
 }
 
 function parseCsvLine(line: string): string[] {
@@ -1057,4 +1057,35 @@ export async function exportExamResults(examId: string, lecturerId: string): Pro
   }
 
   return lines.join("\n");
+}
+
+export async function deleteExam(
+  examIdInput: string,
+  lecturerId: string,
+): Promise<{ status: number; body: { ok: boolean; error?: { message: string } } }> {
+  const examId = examIdInput.trim();
+  if (!examId) {
+    return { status: 400, body: { ok: false, error: { message: "examId is required." } } };
+  }
+
+  const exam = await loadExamSummaryById(examId);
+  if (!exam) {
+    return { status: 404, body: { ok: false, error: { message: "Exam does not exist." } } };
+  }
+
+  if (exam.lecturerId !== lecturerId) {
+    return { status: 403, body: { ok: false, error: { message: "You do not own this exam." } } };
+  }
+
+  try {
+    await prisma.exam.delete({
+      where: {
+        id: examId,
+      },
+    });
+
+    return { status: 200, body: { ok: true } };
+  } catch (error) {
+    return { status: 500, body: { ok: false, error: { message: "Failed to delete exam." } } };
+  }
 }
